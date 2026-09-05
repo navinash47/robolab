@@ -168,6 +168,7 @@ export default function App() {
   const [compareData, setCompareData] = useState<CompareResponse | null>(null);
   const [comparing, setComparing] = useState(false);
   const [renderingId, setRenderingId] = useState<string | null>(null);
+  const [flaggingId, setFlaggingId] = useState<string | null>(null);
   const [detailId, setDetailId] = useState<string | null>(null);
   const [searchInput, setSearchInput] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -432,6 +433,41 @@ export default function App() {
     }
   }
 
+  async function flagExperimentFailure(run: RunRow) {
+    const reason = window.prompt(
+      `Flag experiment failure for ${run.name}\n\nWhat went wrong (science/engineering)?`,
+      run.error || "",
+    );
+    if (reason == null) return;
+    const trimmed = reason.trim();
+    if (!trimmed) {
+      setError("Experiment failure reason is required");
+      return;
+    }
+    setFlaggingId(run.id);
+    setError(null);
+    try {
+      const res = await fetch("/api/failures", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          category: "experiment",
+          run_id: run.id,
+          title: `${run.name}: experiment failure`,
+          reason: trimmed,
+        }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`POST /api/failures failed (${res.status}): ${text}`);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Flag failed");
+    } finally {
+      setFlaggingId(null);
+    }
+  }
+
   // Poll while any run is RENDERING video
   useEffect(() => {
     const busy = runs.some((r) => r.video_status === "RENDERING");
@@ -513,6 +549,15 @@ export default function App() {
           </h1>
         </div>
         <div className="flex items-center gap-6">
+          <a
+            href="http://localhost:8000/failures"
+            target="_blank"
+            rel="noopener noreferrer"
+            data-testid="failures-link"
+            className="text-sm font-medium text-[var(--accent)] underline-offset-2 hover:underline"
+          >
+            Failures
+          </a>
           <a
             href="http://localhost:8000/spend"
             target="_blank"
@@ -1271,6 +1316,17 @@ export default function App() {
                       Render video
                     </button>
                   )}
+                <button
+                  type="button"
+                  data-testid="flag-experiment-failure"
+                  disabled={flaggingId === detailRun.id}
+                  onClick={() => void flagExperimentFailure(detailRun)}
+                  className="mt-4 ml-2 rounded border border-[var(--border)] bg-white px-4 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-50"
+                >
+                  {flaggingId === detailRun.id
+                    ? "Flagging…"
+                    : "Flag experiment failure"}
+                </button>
               </div>
             )}
 

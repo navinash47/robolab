@@ -83,6 +83,21 @@ class CostLedger(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class FailureRecord(SQLModel, table=True):
+    """Logistics / experiment failures for the Failure Resolution page."""
+
+    __tablename__ = "failure"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    category: str = Field(index=True)  # logistics | experiment
+    run_id: Optional[str] = Field(default=None, index=True)
+    title: str
+    reason: str = ""
+    suggested_fix: Optional[str] = None
+    source: str = "auto"  # auto | manual | seed
+
+
 _RUN_EXTRA_COLS: dict[str, str] = {
     "param_count": "INTEGER",
     "pod_id": "TEXT",

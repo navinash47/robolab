@@ -11,6 +11,7 @@ export default defineConfig({
       "/api": "http://127.0.0.1:8000",
       "/health": "http://127.0.0.1:8000",
       "/spend": "http://127.0.0.1:8000",
+      "/failures": "http://127.0.0.1:8000",
     },
   },
 });

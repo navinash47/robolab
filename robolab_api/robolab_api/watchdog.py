@@ -169,6 +169,12 @@ def _kill_run(
         run.updated_at = now
         finalize_cost(session, run, pod_row, reason=f"kill:{reason}")
         session.add(run)
+        try:
+            from robolab_api.failures import record_logistics_from_run
+
+            record_logistics_from_run(session, run)
+        except Exception:
+            logger.exception("failed to record logistics failure for %s", run.id)
     session.commit()
 
 
@@ -310,6 +316,14 @@ def sweep_once() -> list[str]:
                         run.updated_at = now
                         finalize_cost(session, run, pod_row, reason="fail:pod_vanished")
                         session.add(run)
+                        try:
+                            from robolab_api.failures import record_logistics_from_run
+
+                            record_logistics_from_run(session, run)
+                        except Exception:
+                            logger.exception(
+                                "failed to record logistics failure for %s", run.id
+                            )
                         actions.append(f"{pod_row.id}:pod_vanished")
                 session.commit()
         session.commit()

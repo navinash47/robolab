@@ -12,7 +12,8 @@ from sqlmodel import select
 
 from robolab_api.budget import get_budget
 from robolab_api.db import Run, SessionDep, create_db_and_tables
-from robolab_api.routes import compare_router, costs_router, runs_router
+from robolab_api.routes import compare_router, costs_router, failures_router, runs_router
+from robolab_api.routes.failures import ensure_seeded
 from robolab_api.wandb_status import get_wandb_status
 from robolab_api.watchdog import watchdog_loop
 
@@ -50,6 +51,10 @@ def _run_checkpoints(run: Run) -> list[dict]:
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     create_db_and_tables()
+    try:
+        ensure_seeded()
+    except Exception:
+        logger.exception("failure seed failed")
     stop = asyncio.Event()
     task = asyncio.create_task(watchdog_loop(stop), name="robolab-watchdog")
     logger.info("watchdog task started")
@@ -76,6 +81,7 @@ app.add_middleware(
 app.include_router(runs_router)
 app.include_router(compare_router)
 app.include_router(costs_router)
+app.include_router(failures_router)
 
 
 @app.get("/health")

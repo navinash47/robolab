@@ -22,10 +22,19 @@ from robolab.compute.runpod import RunPodConfigError, launch_runpod
 from robolab.core.run import RunConfig, RunStatus
 from robolab_api.budget import refuse_if_over_cap
 from robolab_api.db import Pod, Run, SessionDep
+from robolab_api.failures import record_logistics_from_run
 
 logger = logging.getLogger("robolab.runs")
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
+
+
+def _log_logistics_fail(session: SessionDep, run: Run) -> None:
+    """Persist a logistics FailureRecord for a run that could not proceed."""
+    try:
+        record_logistics_from_run(session, run)
+    except Exception:
+        logger.exception("failed to record logistics failure for %s", run.id)
 
 
 class HeartbeatBody(BaseModel):
@@ -270,6 +279,7 @@ def create_run(body: RunConfig, session: SessionDep) -> dict:
             row.error = str(exc)
             row.updated_at = datetime.now(timezone.utc)
             session.add(row)
+            _log_logistics_fail(session, row)
             session.commit()
             raise HTTPException(500, f"Failed to launch local trainer: {exc}") from exc
         return _run_to_dict(row)
@@ -282,6 +292,7 @@ def create_run(body: RunConfig, session: SessionDep) -> dict:
         row.error = str(exc)
         row.updated_at = datetime.now(timezone.utc)
         session.add(row)
+        _log_logistics_fail(session, row)
         session.commit()
         raise HTTPException(400, str(exc)) from exc
 
@@ -305,6 +316,7 @@ def create_run(body: RunConfig, session: SessionDep) -> dict:
         row.error = str(exc)
         row.updated_at = datetime.now(timezone.utc)
         session.add(row)
+        _log_logistics_fail(session, row)
         session.commit()
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
@@ -313,6 +325,7 @@ def create_run(body: RunConfig, session: SessionDep) -> dict:
         row.error = str(exc)
         row.updated_at = datetime.now(timezone.utc)
         session.add(row)
+        _log_logistics_fail(session, row)
         session.commit()
         raise HTTPException(500, f"Failed to launch RunPod: {exc}") from exc
 
@@ -430,6 +443,7 @@ def fail(run_id: str, body: FailBody, session: SessionDep) -> dict:
     run.updated_at = datetime.now(timezone.utc)
     _settle_runpod_cost(session, run, reason="fail")
     session.add(run)
+    _log_logistics_fail(session, run)
     session.commit()
     return {"ok": True}
 

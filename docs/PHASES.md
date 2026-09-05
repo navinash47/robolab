@@ -16,4 +16,6 @@ Each phase: implement → write `docs/PHASE_<n>_APIS.md` (before code) and `docs
 | **9** | Task-spec generator: text box → Haiku → structured spec (TaskSpec skeleton, obs/action/reward description, suggested evaluators, suggested perturbations, a ready-to-paste Cursor prompt to implement `robolab/tasks/<name>.py`) with a copy button; saved to `experiments/specs/` | Type "quadruped standing balance on a tilting platform". Get a full spec + Cursor prompt in under 20s, copy it, and it references the actual `TaskSpec` interface in this repo. |
 | **10** | Genesis adapter (GPU); then Isaac Lab adapter behind a capability flag; same URDF, same task | `wall_follow` video from Genesis. Transfer report MuJoCo → Genesis. |
 
+**Ops tooling (not a phase):** **Failure Resolution** at [`http://localhost:8000/failures`](http://localhost:8000/failures) (dashboard header **Failures** → new tab). Categories: **logistics** (infra/ops abort) vs **experiment** (science/engineering wrong). Auto-logs FAILED/watchdog kills; manually flag COMPLETE run-quality issues via `POST /api/failures` or the page form. Use when debugging why a run died or looked wrong — does not start Phase 6.
+
 Later (not now): Gazebo/ROS 2 adapter, real-robot deployment hooks, hyperparameter sweeps via W&B Sweeps, Render/Railway deployment of the dashboard.
