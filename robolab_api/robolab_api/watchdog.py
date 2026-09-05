@@ -204,11 +204,16 @@ def sweep_once() -> list[str]:
             if not pod_id:
                 continue
             env = _env_from_pod(remote)
+            # Prefer DB pod→run mapping. GraphQL list_pods often returns empty env
+            # right after create; killing on missing RUN_ID was a false positive that
+            # terminated the Secure smoke pod ~1min after launch.
+            pod_row = session.get(Pod, pod_id)
             run_id = (env.get("RUN_ID") or "").strip() or None
+            if not run_id and pod_row is not None:
+                run_id = (pod_row.run_id or "").strip() or None
             run = known_runs.get(run_id) if run_id else None
 
             # Accrue cost for known runpod runs
-            pod_row = session.get(Pod, pod_id)
             if run and run.compute == "runpod":
                 rate = float(
                     run.hourly_rate
@@ -250,6 +255,12 @@ def sweep_once() -> list[str]:
                     accrued_usd=accrued,
                     budget_usd=float(run.budget_usd or 0.0),
                 )
+            elif pod_row is not None and run_id:
+                # DB knows the pod but run row missing / non-runpod — do not kill.
+                decision = KillDecision(False)
+            elif pod_row is not None and not run_id:
+                # Our pod row exists; wait for env / run linkage — never orphan-kill.
+                decision = KillDecision(False)
             else:
                 decision = decide_kill(
                     run_id=run_id,
@@ -265,7 +276,7 @@ def sweep_once() -> list[str]:
                 _kill_run(session, run, pod_id, decision.reason)
                 actions.append(f"{pod_id}:{decision.reason}")
 
-        # DB pods marked live but gone from API → leave status; cost already set
+        # DB pods marked live but gone from API
         for pod_row in session.exec(select(Pod).where(Pod.terminated_at.is_(None))).all():
             if pod_row.id not in live_ids:
                 pod_row.status = "TERMINATED"
@@ -277,10 +288,19 @@ def sweep_once() -> list[str]:
                     RunStatus.RUNNING.value,
                     RunStatus.QUEUED.value,
                 }:
-                    # Pod vanished without complete — mark failed if no status yet
-                    if run.status != RunStatus.COMPLETE.value:
-                        # Likely self-terminated after complete; if complete already posted, skip
-                        pass
+                    # Pod vanished without complete/fail callback — surface clearly.
+                    if run.status != RunStatus.KILLED_BY_WATCHDOG.value:
+                        run.status = RunStatus.FAILED.value
+                        run.error = (
+                            run.error
+                            or "Pod disappeared from RunPod before the trainer finished "
+                            "(watchdog kill, entrypoint crash, or machine reclaim). "
+                            "Check worker logs / image / git clone."
+                        )
+                        run.updated_at = now
+                        finalize_cost(session, run, pod_row, reason="fail:pod_vanished")
+                        session.add(run)
+                        actions.append(f"{pod_row.id}:pod_vanished")
                 session.commit()
         session.commit()
     return actions
