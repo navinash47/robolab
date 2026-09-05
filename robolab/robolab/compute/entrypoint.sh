@@ -78,10 +78,15 @@ trap cleanup EXIT
 : "${RUNPOD_API_KEY:?RUNPOD_API_KEY required}"
 
 export WANDB_PROJECT="${WANDB_PROJECT:-robolab}"
-# Headless pods: OSMesa is reliable. EGL often fails with
-# AttributeError: 'NoneType' object has no attribute 'eglQueryString'
-# when libEGL is incomplete in the container.
-export MUJOCO_GL="${MUJOCO_GL:-osmesa}"
+# Prefer NVIDIA EGL on GPU machines; OSMesa otherwise. Pure EGL without NVIDIA
+# libs previously failed with eglQueryString NoneType.
+if [[ -z "${MUJOCO_GL:-}" ]]; then
+  if [[ -e /dev/nvidia0 ]] || [[ -n "${NVIDIA_VISIBLE_DEVICES:-}" ]]; then
+    export MUJOCO_GL=egl
+  else
+    export MUJOCO_GL=osmesa
+  fi
+fi
 export PYTHONUNBUFFERED=1
 export UV_CACHE_DIR="${UV_CACHE_DIR:-/workspace/.cache/uv}"
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/workspace/.cache}"
@@ -95,6 +100,7 @@ if ! ldconfig -p 2>/dev/null | grep -qi osmesa; then
     && rm -rf /var/lib/apt/lists/* \
     || log "WARN: apt GL install failed — MuJoCo may still crash"
 fi
+log "MUJOCO_GL=${MUJOCO_GL}"
 
 REPO_DIR="${REPO_DIR:-/workspace/robolab}"
 RUN_DIR="/workspace/runs/${RUN_ID}"

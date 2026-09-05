@@ -109,6 +109,29 @@ def train(cfg: RunConfig, run_id: str, backend_url: str) -> dict:
             },
         )
 
+        device = cfg.trainer.device
+        if device == "cuda":
+            import torch
+
+            try:
+                ok = bool(torch.cuda.is_available() and torch.cuda.device_count() > 0)
+                if ok:
+                    # Force a tiny alloc so driver mismatches surface before PPO.
+                    _ = torch.zeros(1, device="cuda")
+            except Exception as cuda_exc:
+                ok = False
+                print(f"CUDA probe failed ({cuda_exc}); falling back to CPU", flush=True)
+            if not ok:
+                print(
+                    "CUDA unavailable on this pod — falling back to device=cpu "
+                    f"(driver/torch mismatch). Requested device was {device!r}.",
+                    flush=True,
+                )
+                device = "cpu"
+                cfg = cfg.model_copy(
+                    update={"trainer": cfg.trainer.model_copy(update={"device": "cpu"})}
+                )
+
         env = build_env(cfg)
         policy_kwargs = {
             "arch_name": cfg.arch,
@@ -122,7 +145,7 @@ def train(cfg: RunConfig, run_id: str, backend_url: str) -> dict:
             batch_size=cfg.trainer.batch_size,
             gamma=cfg.trainer.gamma,
             verbose=1,
-            device=cfg.trainer.device,
+            device=device,
             seed=cfg.trainer.seed,
             policy_kwargs=policy_kwargs,
         )
