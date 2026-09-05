@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 from robolab.core.run import RunConfig
+
+_LEGACY_KEY = re.compile(r"^[a-f0-9]{40}$")
+_V1_KEY = re.compile(r"^wandb_v1_[A-Za-z0-9_]{77}$")
 
 
 def repo_root() -> Path:
@@ -25,6 +29,55 @@ def write_run_config(cfg: RunConfig, run_id: str) -> Path:
     return path
 
 
+def _trainer_env(backend_url: str) -> dict[str, str]:
+    """Copy parent env and ensure W&B + backend vars reach the trainer child.
+
+    `make dev` loads `.env` via `uv run --env-file .env` into the API process;
+    the child only sees what we pass here (defaults to a full environ copy).
+    """
+    env = os.environ.copy()
+    env["BACKEND_URL"] = backend_url
+    env["CUDA_VISIBLE_DEVICES"] = ""
+
+    api_key = (env.get("WANDB_API_KEY") or "").strip()
+    if not api_key:
+        raise RuntimeError(
+            "WANDB_API_KEY is missing in the API process environment. "
+            "Set it in .env and restart `make dev` (uv --env-file)."
+        )
+    if not (_LEGACY_KEY.fullmatch(api_key) or _V1_KEY.fullmatch(api_key)):
+        if api_key.startswith("wandb_v1_"):
+            body = len(api_key) - len("wandb_v1_")
+            raise RuntimeError(
+                f"WANDB_API_KEY looks truncated/corrupt (wandb_v1_ body len={body}, "
+                f"expected 77; total len={len(api_key)}, expected 86). "
+                "Paste a fresh key from https://wandb.ai/authorize into .env and restart."
+            )
+        raise RuntimeError(
+            f"WANDB_API_KEY has unexpected length {len(api_key)} "
+            "(want legacy 40-char hex or wandb_v1_ 86-char). "
+            "Paste a fresh key from https://wandb.ai/authorize into .env and restart."
+        )
+    env["WANDB_API_KEY"] = api_key
+
+    project = (env.get("WANDB_PROJECT") or "robolab").strip() or "robolab"
+    env["WANDB_PROJECT"] = project
+
+    entity = (env.get("WANDB_ENTITY") or "").strip()
+    if entity:
+        env["WANDB_ENTITY"] = entity
+    else:
+        env.pop("WANDB_ENTITY", None)
+
+    mode = (env.get("WANDB_MODE") or "").strip().lower()
+    if mode == "offline":
+        raise RuntimeError(
+            "WANDB_MODE=offline is set; Phase 1 needs a live W&B return curve. "
+            "Unset WANDB_MODE in .env and restart `make dev`."
+        )
+    return env
+
+
 def launch_local(
     cfg: RunConfig,
     run_id: str,
@@ -35,10 +88,7 @@ def launch_local(
         raise ValueError("launch_local requires compute='local'")
 
     config_path = write_run_config(cfg, run_id)
-    env = os.environ.copy()
-    env["BACKEND_URL"] = backend_url
-    env.setdefault("WANDB_PROJECT", "robolab")
-    env["CUDA_VISIBLE_DEVICES"] = ""
+    env = _trainer_env(backend_url)
 
     cmd = [
         sys.executable,

@@ -6,6 +6,18 @@ type Budget = {
   remaining_usd: number;
 };
 
+type WandbStatus = {
+  present: boolean;
+  well_formed: boolean;
+  key_len: number;
+  auth_ok: boolean | null;
+  status: string;
+  project: string;
+  entity: string | null;
+  mode: string | null;
+  detail: string;
+};
+
 type RunRow = {
   id: string;
   name: string;
@@ -52,6 +64,7 @@ function statusClass(status: string): string {
 
 export default function App() {
   const [budget, setBudget] = useState<Budget | null>(null);
+  const [wandb, setWandb] = useState<WandbStatus | null>(null);
   const [runs, setRuns] = useState<RunRow[]>([]);
   const [count, setCount] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -69,9 +82,10 @@ export default function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const [budgetRes, experimentsRes] = await Promise.all([
+      const [budgetRes, experimentsRes, wandbRes] = await Promise.all([
         fetch("/api/budget"),
         fetch("/api/experiments"),
+        fetch("/api/wandb/status"),
       ]);
       if (!budgetRes.ok || !experimentsRes.ok) {
         throw new Error(
@@ -83,6 +97,11 @@ export default function App() {
       setBudget(budgetJson);
       setRuns(experimentsJson.experiments);
       setCount(experimentsJson.count);
+      if (wandbRes.ok) {
+        setWandb((await wandbRes.json()) as WandbStatus);
+      } else {
+        setWandb(null);
+      }
       setError(null);
     } catch (err) {
       setError(
@@ -223,6 +242,26 @@ export default function App() {
       ? "Budget: …"
       : `Budget: ${formatUsd(budget.remaining_usd)} remaining`;
 
+  const wandbLabel = (() => {
+    if (wandb === null) return "W&B: …";
+    switch (wandb.status) {
+      case "ok":
+        return "W&B: key valid";
+      case "missing":
+        return "W&B: key missing";
+      case "invalid_shape":
+        return "W&B: key invalid (truncated?)";
+      case "invalid":
+        return "W&B: key rejected (401)";
+      case "unreachable":
+        return "W&B: unreachable";
+      default:
+        return `W&B: ${wandb.status}`;
+    }
+  })();
+
+  const wandbOk = wandb?.status === "ok";
+
   const experimentsLabel =
     count === null ? "…" : `${count} experiment${count === 1 ? "" : "s"}`;
 
@@ -240,6 +279,13 @@ export default function App() {
         <div className="text-right">
           <p className="text-sm font-medium text-[var(--ok)]" data-testid="budget">
             {remainingLabel}
+          </p>
+          <p
+            className={`text-xs ${wandbOk ? "text-[var(--ok)]" : "text-red-700"}`}
+            data-testid="wandb-status"
+            title={wandb?.detail ?? ""}
+          >
+            {wandbLabel}
           </p>
           {budget !== null && (
             <p className="text-xs text-[var(--muted)]">

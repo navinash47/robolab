@@ -1245,7 +1245,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "stable-baselines3", specifier = ">=2.3.0" },
     { name = "torch", specifier = ">=2.2.0" },
-    { name = "wandb", specifier = ">=0.17.0" },
+    { name = "wandb", specifier = ">=0.22.3" },
 ]
 
 [[package]]

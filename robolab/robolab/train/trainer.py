@@ -64,7 +64,8 @@ def train(cfg: RunConfig, run_id: str, backend_url: str) -> dict:
         )
         raise RuntimeError(err)
 
-    project = os.environ.get("WANDB_PROJECT", "robolab")
+    project = (os.environ.get("WANDB_PROJECT") or "robolab").strip() or "robolab"
+    entity = (os.environ.get("WANDB_ENTITY") or "").strip() or None
     run_name = cfg.name or f"{cfg.task}-{cfg.arch}-{cfg.sim}-{run_id[:8]}"
     backend = backend_url.rstrip("/")
     wandb_run = None
@@ -72,14 +73,17 @@ def train(cfg: RunConfig, run_id: str, backend_url: str) -> dict:
 
     try:
         try:
-            wandb_run = wandb.init(
-                project=project,
-                name=run_name,
-                config=cfg.model_dump(),
-                job_type="train",
-                tags=["phase1", cfg.arch, cfg.task, cfg.sim, cfg.compute],
-                settings=wandb.Settings(init_timeout=120),
-            )
+            init_kwargs: dict = {
+                "project": project,
+                "name": run_name,
+                "config": cfg.model_dump(),
+                "job_type": "train",
+                "tags": ["phase1", cfg.arch, cfg.task, cfg.sim, cfg.compute],
+                "settings": wandb.Settings(init_timeout=120),
+            }
+            if entity:
+                init_kwargs["entity"] = entity
+            wandb_run = wandb.init(**init_kwargs)
         except Exception as exc:
             err = (
                 f"W&B init failed ({type(exc).__name__}: {exc}). "

@@ -11,6 +11,7 @@ from sqlmodel import select
 from robolab_api.budget import get_budget
 from robolab_api.db import Run, SessionDep, create_db_and_tables
 from robolab_api.routes import runs_router
+from robolab_api.wandb_status import get_wandb_status
 
 
 @asynccontextmanager
@@ -66,6 +67,12 @@ def list_experiments(session: SessionDep) -> dict:
 @app.get("/api/budget")
 def budget() -> dict[str, float]:
     return get_budget()
+
+
+@app.get("/api/wandb/status")
+def wandb_status() -> dict:
+    """Presence / shape / auth probe for WANDB_API_KEY (never returns the key)."""
+    return get_wandb_status(probe=True)
 
 
 def run() -> None:
