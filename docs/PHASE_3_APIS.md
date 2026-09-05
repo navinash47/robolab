@@ -4,11 +4,28 @@ Exact RunPod / Docker / env signatures for Phase 3. **Doc wins** if it contradic
 
 Sources (checked 2026-09-04):
 
+- [Agent setup (official)](https://docs.runpod.io/agent-setup.md) — skills + hosted MCP for the coding agent
 - [runpod-python `ctl_commands.py`](https://github.com/runpod/runpod-python/blob/main/runpod/api/ctl_commands.py) (`runpod` PyPI ≈ 1.12.x)
 - [Manage Pods (REST)](https://docs.runpod.io/pods/manage-pods)
 - [Create Pod REST `POST /pods`](https://docs.runpod.io/api-reference/pods/POST/pods)
 - [Network volumes](https://docs.runpod.io/storage/network-volumes)
 - GPU price fields via SDK GraphQL `get_gpu` / `get_gpus`
+
+## Conflict: `agent-setup.md` vs Phase 3 RoboLab app
+
+Official [agent-setup.md](https://docs.runpod.io/agent-setup.md) is **agent onboarding only** (install Runpod skills + wire `https://mcp.getrunpod.io/`). It explicitly says:
+
+- Do **not** install `runpodctl` / Flash / API keys during setup — skills install those later on demand.
+- MCP auth is **OAuth** (“Sign in with Runpod”); no API key created or stored by that flow.
+- Prefer MCP tools for control-plane CRUD once connected; MCP drives **REST v2** (`api.runpod.io`), not hand-rolled `rest.runpod.io/v1`.
+
+| Concern | Prefer | Why |
+|---|---|---|
+| Cursor/agent infra tools | Hosted MCP + skills per agent-setup | Official agent path |
+| RoboLab backend `create_pod` / watchdog / entrypoint self-terminate | `RUNPOD_API_KEY` in project `.env` + `runpod-python` / REST DELETE | App runs headlessly outside the IDE; OAuth MCP cannot replace process env |
+| Entrypoint `DELETE https://rest.runpod.io/v1/pods/$ID` | Keep (matches Manage Pods docs + build prompt) | Skills note v1 is buggy for *some* control ops; terminate DELETE remains the documented self-kill path |
+
+**Phase 3 still requires `RUNPOD_API_KEY` (and related) in `.env` for the FastAPI runner** — that is separate from agent MCP OAuth and is **not** set up by agent-setup. Do not commit those secrets.
 
 ## Auth
 
