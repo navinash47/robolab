@@ -144,12 +144,20 @@ set +e
 uv run --package robolab python -m robolab.train.trainer \
   --run-id "${RUN_ID}" \
   --config "${CONFIG_PATH}" \
-  --backend-url "${BACKEND_URL}"
+  --backend-url "${BACKEND_URL}" \
+  > /tmp/robolab-trainer.out 2> /tmp/robolab-trainer.err
 trainer_rc=$?
 set -e
+if [[ -s /tmp/robolab-trainer.out ]]; then
+  log "trainer stdout (tail):"; tail -n 40 /tmp/robolab-trainer.out || true
+fi
+if [[ -s /tmp/robolab-trainer.err ]]; then
+  log "trainer stderr (tail):"; tail -n 40 /tmp/robolab-trainer.err || true
+fi
 if [[ "${trainer_rc}" -ne 0 ]]; then
-  # Trainer posts a detailed /fail itself; do not overwrite with a generic message.
-  FAIL_POSTED=1
+  detail=$(tr '\n' ' ' </tmp/robolab-trainer.err 2>/dev/null | tr -cd '[:print:] ' | tail -c 1500)
+  FAIL_POSTED=0
+  report_fail "trainer rc=${trainer_rc}: ${detail:-no stderr captured}"
   exit "${trainer_rc}"
 fi
 
