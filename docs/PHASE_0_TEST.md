@@ -111,3 +111,15 @@ Ctrl+C in the `make dev` terminal. Both API and Vite should stop (`trap` kills t
 - Cost ledger / month spend always `0` until Phase 3
 
 If any required PASS item fails, Phase 0 is **not done**.
+
+---
+
+## Agent verification (2026-09-04)
+
+All 6 PASS checklist items verified with live evidence:
+
+- `make dev` up on `:8000` and `:5173`
+- `/health`, `/api/budget`, `/api/experiments` JSON as previously verified
+- UI: RoboLab brand, Budget: $100.00 remaining, 0 experiments
+
+**Status: awaiting human confirmation before Phase 1.**
