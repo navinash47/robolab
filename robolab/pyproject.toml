@@ -14,10 +14,14 @@ dependencies = [
     "numpy>=1.26.0",
     "efficient-kan",
     "runpod>=1.7.0",
+    # Required by Gymnasium RecordVideo (gymnasium[other]); Phase 4 playback.
+    "moviepy>=1.0.3",
+    "imageio-ffmpeg>=0.5.0",
 ]
 
 [project.scripts]
 robolab-train = "robolab.train.trainer:main"
+robolab-render = "robolab.train.render_video:main"
 
 [build-system]
 requires = ["hatchling"]

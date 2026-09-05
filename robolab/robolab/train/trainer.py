@@ -154,12 +154,23 @@ def train(cfg: RunConfig, run_id: str, backend_url: str) -> dict:
         ckpt_path = ckpt_dir / "policy.zip"
         model.save(str(ckpt_path))
 
+        artifact_name = f"policy-{run_id}"
+        if wandb_run is not None:
+            art = wandb.Artifact(name=artifact_name, type="model")
+            art.add_file(str(ckpt_path), name="policy.zip")
+            logged = wandb_run.log_artifact(art)
+            try:
+                logged.wait(timeout=120)
+            except Exception:
+                pass
+
         result = {
             "status": "COMPLETE",
             "wandb_url": wandb_url,
             "mean_return": mean_ret,
             "step": cfg.trainer.timesteps,
             "checkpoint": str(ckpt_path),
+            "checkpoint_artifact": artifact_name,
             "param_count": param_count,
         }
         _post_json(f"{backend}/api/runs/{run_id}/complete", result)

@@ -46,6 +46,11 @@ class Run(SQLModel, table=True):
     hourly_rate: Optional[float] = None
     cost_usd: Optional[float] = None
     budget_usd: float = 0.0
+    video_status: Optional[str] = None  # None | RENDERING | READY | FAILED
+    video_path: Optional[str] = None
+    video_url: Optional[str] = None
+    video_error: Optional[str] = None
+    checkpoint_artifact: Optional[str] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -81,6 +86,11 @@ _RUN_EXTRA_COLS: dict[str, str] = {
     "hourly_rate": "REAL",
     "cost_usd": "REAL",
     "budget_usd": "REAL DEFAULT 0",
+    "video_status": "TEXT",
+    "video_path": "TEXT",
+    "video_url": "TEXT",
+    "video_error": "TEXT",
+    "checkpoint_artifact": "TEXT",
 }
 
 

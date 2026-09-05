@@ -86,6 +86,9 @@ def list_experiments(session: SessionDep) -> dict:
                 "hourly_rate": r.hourly_rate,
                 "cost_usd": r.cost_usd,
                 "budget_usd": r.budget_usd,
+                "video_status": r.video_status,
+                "video_url": r.video_url,
+                "video_error": r.video_error,
             }
             for r in rows
         ],

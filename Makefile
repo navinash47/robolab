@@ -32,5 +32,5 @@ worker-image:
 	@echo "Then set ROBOLAB_WORKER_IMAGE=$(IMAGE) in .env"
 
 test:
-	@echo "See docs/PHASE_3_TEST.md for the Phase 3 human gate."
+	@echo "See docs/PHASE_4_TEST.md for the Phase 4 human gate."
 	uv run --package robolab-api python -m pytest robolab_api/tests -q --tb=short

@@ -48,6 +48,9 @@ type RunRow = {
   hourly_rate?: number | null;
   cost_usd?: number | null;
   budget_usd?: number | null;
+  video_status?: string | null;
+  video_url?: string | null;
+  video_error?: string | null;
 };
 
 type ExperimentsResponse = {
@@ -141,6 +144,8 @@ export default function App() {
   const [selectedCompare, setSelectedCompare] = useState<string[]>([]);
   const [compareData, setCompareData] = useState<CompareResponse | null>(null);
   const [comparing, setComparing] = useState(false);
+  const [renderingId, setRenderingId] = useState<string | null>(null);
+  const [detailId, setDetailId] = useState<string | null>(null);
   const [form, setForm] = useState({
     compute: "local",
     arch: "mlp",
@@ -361,6 +366,35 @@ export default function App() {
     }
   }
 
+  async function renderVideo(runId: string) {
+    setRenderingId(runId);
+    setDetailId(runId);
+    setError(null);
+    try {
+      const res = await fetch(`/api/runs/${runId}/render`, { method: "POST" });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`POST /api/runs/${runId}/render failed (${res.status}): ${text}`);
+      }
+      const data = (await res.json()) as RunRow;
+      setRuns((prev) => prev.map((r) => (r.id === runId ? { ...r, ...data } : r)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Render failed");
+      setRenderingId(null);
+    }
+  }
+
+  // Poll while any run is RENDERING video
+  useEffect(() => {
+    const busy = runs.some((r) => r.video_status === "RENDERING");
+    if (!busy) {
+      setRenderingId(null);
+      return;
+    }
+    const t = setInterval(() => void refresh(), 2000);
+    return () => clearInterval(t);
+  }, [runs, refresh]);
+
   const chartData = useMemo(
     () => (compareData ? buildChartData(compareData.runs.filter((r) => r.history.length)) : []),
     [compareData],
@@ -394,6 +428,7 @@ export default function App() {
     count === null ? "…" : `${count} experiment${count === 1 ? "" : "s"}`;
 
   const selectable = runs.filter((r) => r.wandb_url);
+  const detailRun = detailId ? runs.find((r) => r.id === detailId) ?? null : null;
 
   return (
     <div className="min-h-screen">
@@ -645,13 +680,14 @@ export default function App() {
                     <th className="px-4 py-3 font-medium">Mean return</th>
                     <th className="px-4 py-3 font-medium">Cost</th>
                     <th className="px-4 py-3 font-medium">W&amp;B</th>
+                    <th className="px-4 py-3 font-medium">Video</th>
                   </tr>
                 </thead>
                 <tbody>
                   {count === 0 ? (
                     <tr>
                       <td
-                        colSpan={9}
+                        colSpan={10}
                         className="px-4 py-16 text-center text-[var(--muted)]"
                         data-testid="empty-experiments"
                       >
@@ -661,7 +697,7 @@ export default function App() {
                   ) : count === null ? (
                     <tr>
                       <td
-                        colSpan={9}
+                        colSpan={10}
                         className="px-4 py-16 text-center text-[var(--muted)]"
                       >
                         Loading…
@@ -689,7 +725,14 @@ export default function App() {
                           />
                         </td>
                         <td className="px-4 py-3 font-medium">
-                          {r.name}
+                          <button
+                            type="button"
+                            className="text-left hover:underline"
+                            onClick={() => setDetailId(r.id)}
+                            data-testid={`open-run-${r.id}`}
+                          >
+                            {r.name}
+                          </button>
                           {r.compute === "runpod" ? (
                             <span className="ml-2 text-xs font-normal text-[var(--muted)]">
                               runpod
@@ -777,12 +820,115 @@ export default function App() {
                             <span className="text-[var(--muted)]">—</span>
                           )}
                         </td>
+                        <td className="px-4 py-3">
+                          {r.status === "COMPLETE" ? (
+                            <div className="flex flex-col gap-1">
+                              <button
+                                type="button"
+                                data-testid={`render-video-${r.id}`}
+                                disabled={
+                                  r.video_status === "RENDERING" ||
+                                  renderingId === r.id
+                                }
+                                onClick={() => void renderVideo(r.id)}
+                                className="rounded border border-[var(--border)] bg-white px-2 py-1 text-xs font-medium hover:bg-slate-50 disabled:opacity-40"
+                              >
+                                {r.video_status === "RENDERING" || renderingId === r.id
+                                  ? "Rendering…"
+                                  : r.video_status === "READY"
+                                    ? "Re-render video"
+                                    : "Render video"}
+                              </button>
+                              {r.video_status === "READY" ? (
+                                <button
+                                  type="button"
+                                  className="text-left text-xs text-[var(--accent)] underline"
+                                  onClick={() => setDetailId(r.id)}
+                                  data-testid={`watch-video-${r.id}`}
+                                >
+                                  Watch
+                                </button>
+                              ) : null}
+                              {r.video_status === "FAILED" && r.video_error ? (
+                                <span
+                                  className="max-w-[10rem] truncate text-xs text-red-700"
+                                  title={r.video_error}
+                                >
+                                  failed
+                                </span>
+                              ) : null}
+                            </div>
+                          ) : (
+                            <span className="text-[var(--muted)]">—</span>
+                          )}
+                        </td>
                       </tr>
                     ))
                   )}
                 </tbody>
               </table>
             </div>
+
+            {detailRun && (
+              <div
+                className="mt-6 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-5"
+                data-testid="run-detail"
+              >
+                <div className="mb-3 flex items-baseline justify-between gap-4">
+                  <div>
+                    <h3 className="text-base font-medium">{detailRun.name}</h3>
+                    <p className="text-xs text-[var(--muted)]">
+                      {detailRun.id} · {detailRun.status}
+                      {detailRun.video_status
+                        ? ` · video ${detailRun.video_status}`
+                        : ""}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    className="text-sm text-[var(--muted)] underline"
+                    onClick={() => setDetailId(null)}
+                  >
+                    Close
+                  </button>
+                </div>
+                {detailRun.video_status === "RENDERING" && (
+                  <p className="mb-3 text-sm text-[var(--muted)]" data-testid="video-rendering">
+                    Rendering playback… usually under a couple of minutes.
+                  </p>
+                )}
+                {detailRun.video_status === "FAILED" && detailRun.video_error && (
+                  <p className="mb-3 text-sm text-red-700" data-testid="video-error">
+                    {detailRun.video_error}
+                  </p>
+                )}
+                {detailRun.video_status === "READY" && (
+                  <video
+                    key={detailRun.video_url ?? detailRun.id}
+                    controls
+                    className="max-h-[360px] w-full rounded bg-black"
+                    src={`/api/runs/${detailRun.id}/video`}
+                    data-testid="video-player"
+                  >
+                    Your browser does not support video.
+                  </video>
+                )}
+                {detailRun.status === "COMPLETE" &&
+                  detailRun.video_status !== "READY" &&
+                  detailRun.video_status !== "RENDERING" && (
+                    <button
+                      type="button"
+                      data-testid="render-video-detail"
+                      disabled={renderingId === detailRun.id}
+                      onClick={() => void renderVideo(detailRun.id)}
+                      className="rounded bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+                    >
+                      Render video
+                    </button>
+                  )}
+              </div>
+            )}
+
             {selectable.length === 0 && count !== null && count > 0 && (
               <p className="mt-3 text-sm text-[var(--muted)]">
                 No runs with W&amp;B URLs yet — finish a training run first.

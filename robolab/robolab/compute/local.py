@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -103,6 +104,72 @@ def launch_local(
     ]
     log_path = repo_root() / "runs" / run_id / "trainer.log"
     log_f = open(log_path, "w", encoding="utf-8")  # kept open for subprocess lifetime
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(repo_root()),
+        env=env,
+        stdout=log_f,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    proc._robolab_log = log_f  # type: ignore[attr-defined]
+    return proc
+
+
+def _mujoco_gl_for_local() -> str:
+    """Match docs/PHASE_4_APIS.md: Darwin=cgl, Linux headless=osmesa."""
+    import platform
+
+    system = platform.system()
+    if system == "Darwin":
+        return "cgl"
+    if system == "Linux":
+        return "osmesa"
+    return ""
+
+
+def launch_render(
+    *,
+    run_id: str,
+    config_path: Path,
+    wandb_url: str,
+    checkpoint: Path | None,
+    backend_url: str = "http://127.0.0.1:8000",
+) -> subprocess.Popen:
+    """Spawn playback renderer subprocess with MUJOCO_GL set before import."""
+    env = _trainer_env(backend_url)
+    gl = _mujoco_gl_for_local()
+    if gl:
+        env["MUJOCO_GL"] = gl
+
+    meta = {
+        "wandb_url": wandb_url,
+        "checkpoint": str(checkpoint) if checkpoint else None,
+    }
+    meta_path = repo_root() / "runs" / run_id / "render_meta.json"
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    meta_path.write_text(json.dumps(meta))
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "robolab.train.render_video",
+        "--run-id",
+        run_id,
+        "--config",
+        str(config_path),
+        "--wandb-url",
+        wandb_url,
+        "--backend-url",
+        backend_url,
+        "--meta",
+        str(meta_path),
+    ]
+    if checkpoint is not None:
+        cmd.extend(["--checkpoint", str(checkpoint)])
+
+    log_path = repo_root() / "runs" / run_id / "render.log"
+    log_f = open(log_path, "w", encoding="utf-8")
     proc = subprocess.Popen(
         cmd,
         cwd=str(repo_root()),

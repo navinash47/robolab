@@ -9,6 +9,7 @@ import os
 import uuid
 from collections.abc import AsyncIterable
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -16,7 +17,7 @@ from fastapi.sse import EventSourceResponse
 from pydantic import BaseModel
 from sqlmodel import select
 
-from robolab.compute.local import launch_local
+from robolab.compute.local import launch_local, launch_render, repo_root
 from robolab.compute.runpod import RunPodConfigError, launch_runpod
 from robolab.core.run import RunConfig, RunStatus
 from robolab_api.budget import refuse_if_over_cap
@@ -43,10 +44,25 @@ class CompleteBody(BaseModel):
     mean_return: float | None = None
     step: int | None = None
     checkpoint: str | None = None
+    checkpoint_artifact: str | None = None
     param_count: int | None = None
 
 
 class FailBody(BaseModel):
+    error: str
+    traceback: str | None = None
+
+
+class VideoCompleteBody(BaseModel):
+    status: str = "READY"
+    video_path: str | None = None
+    video_url: str | None = None
+    wandb_url: str | None = None
+    mujoco_gl: str | None = None
+    checkpoint: str | None = None
+
+
+class VideoFailBody(BaseModel):
     error: str
     traceback: str | None = None
 
@@ -64,6 +80,9 @@ class ProgressEvent(BaseModel):
     hourly_rate: float | None = None
     cost_usd: float | None = None
     gpu_type: str | None = None
+    video_status: str | None = None
+    video_url: str | None = None
+    video_error: str | None = None
 
 
 def _run_to_dict(run: Run) -> dict[str, Any]:
@@ -91,6 +110,11 @@ def _run_to_dict(run: Run) -> dict[str, Any]:
         "hourly_rate": run.hourly_rate,
         "cost_usd": run.cost_usd,
         "budget_usd": run.budget_usd,
+        "video_status": run.video_status,
+        "video_path": run.video_path,
+        "video_url": run.video_url,
+        "video_error": run.video_error,
+        "checkpoint_artifact": run.checkpoint_artifact,
         "created_at": run.created_at.isoformat() if run.created_at else None,
         "updated_at": run.updated_at.isoformat() if run.updated_at else None,
         "config": json.loads(run.config_json) if run.config_json else {},
@@ -270,6 +294,8 @@ def complete(run_id: str, body: CompleteBody, session: SessionDep) -> dict:
         run.mean_return = body.mean_return
     if body.param_count is not None:
         run.param_count = body.param_count
+    if body.checkpoint_artifact:
+        run.checkpoint_artifact = body.checkpoint_artifact
     if body.step is not None:
         run.step = body.step
         run.total_steps = max(run.total_steps, body.step)
@@ -292,6 +318,108 @@ def fail(run_id: str, body: FailBody, session: SessionDep) -> dict:
     session.add(run)
     session.commit()
     return {"ok": True}
+
+
+@router.post("/{run_id}/render")
+def start_render(run_id: str, session: SessionDep) -> dict:
+    """Queue headless playback recording for a COMPLETE run (Phase 4)."""
+    run = session.get(Run, run_id)
+    if not run:
+        raise HTTPException(404, f"Run {run_id} not found")
+    if run.status != RunStatus.COMPLETE.value:
+        raise HTTPException(
+            400,
+            f"Render requires COMPLETE status (got {run.status})",
+        )
+    if not run.wandb_url:
+        raise HTTPException(400, "Run has no wandb_url — cannot attach playback video")
+    if run.video_status == "RENDERING":
+        return _run_to_dict(run)
+
+    config_path = repo_root() / "runs" / run_id / "config.yaml"
+    if not config_path.is_file():
+        raise HTTPException(400, f"Missing run config at {config_path}")
+
+    ckpt = repo_root() / "checkpoints" / run_id / "policy.zip"
+    ckpt_arg = ckpt if ckpt.is_file() else None
+    if ckpt_arg is None and not run.checkpoint_artifact:
+        # Still try — render_video may find an artifact on W&B from a later upload
+        pass
+
+    try:
+        proc = launch_render(
+            run_id=run_id,
+            config_path=config_path,
+            wandb_url=run.wandb_url,
+            checkpoint=ckpt_arg,
+            backend_url="http://127.0.0.1:8000",
+        )
+    except Exception as exc:
+        run.video_status = "FAILED"
+        run.video_error = str(exc)
+        run.updated_at = datetime.now(timezone.utc)
+        session.add(run)
+        session.commit()
+        raise HTTPException(500, f"Failed to launch render: {exc}") from exc
+
+    run.video_status = "RENDERING"
+    run.video_error = None
+    run.pid = proc.pid  # reuse pid field for render process while COMPLETE
+    run.updated_at = datetime.now(timezone.utc)
+    session.add(run)
+    session.commit()
+    session.refresh(run)
+    return _run_to_dict(run)
+
+
+@router.post("/{run_id}/video-complete")
+def video_complete(run_id: str, body: VideoCompleteBody, session: SessionDep) -> dict:
+    run = session.get(Run, run_id)
+    if not run:
+        raise HTTPException(404, f"Run {run_id} not found")
+    run.video_status = "READY"
+    if body.video_path:
+        run.video_path = body.video_path
+    run.video_url = body.video_url or f"/api/runs/{run_id}/video"
+    run.video_error = None
+    if body.wandb_url and not run.wandb_url:
+        run.wandb_url = body.wandb_url
+    run.updated_at = datetime.now(timezone.utc)
+    session.add(run)
+    session.commit()
+    return {"ok": True}
+
+
+@router.post("/{run_id}/video-fail")
+def video_fail(run_id: str, body: VideoFailBody, session: SessionDep) -> dict:
+    run = session.get(Run, run_id)
+    if not run:
+        raise HTTPException(404, f"Run {run_id} not found")
+    run.video_status = "FAILED"
+    run.video_error = body.error
+    run.updated_at = datetime.now(timezone.utc)
+    session.add(run)
+    session.commit()
+    return {"ok": True}
+
+
+@router.get("/{run_id}/video")
+def get_video(run_id: str, session: SessionDep):
+    from fastapi.responses import FileResponse
+
+    run = session.get(Run, run_id)
+    if not run:
+        raise HTTPException(404, f"Run {run_id} not found")
+    if run.video_status != "READY" or not run.video_path:
+        raise HTTPException(404, "Video not ready")
+    path = Path(run.video_path)
+    if not path.is_file():
+        raise HTTPException(404, f"Video file missing: {path}")
+    return FileResponse(
+        path,
+        media_type="video/mp4",
+        filename=f"{run_id}-playback.mp4",
+    )
 
 
 @router.get("/{run_id}/events", response_class=EventSourceResponse)
@@ -330,6 +458,9 @@ async def run_events(run_id: str) -> AsyncIterable[ProgressEvent]:
                 hourly_rate=run.hourly_rate,
                 cost_usd=run.cost_usd,
                 gpu_type=run.gpu_type,
+                video_status=run.video_status,
+                video_url=run.video_url,
+                video_error=run.video_error,
             )
         payload = event.model_dump_json()
         if payload != last_payload:
