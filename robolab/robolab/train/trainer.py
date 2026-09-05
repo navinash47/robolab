@@ -137,8 +137,11 @@ def train(cfg: RunConfig, run_id: str, backend_url: str) -> dict:
 
         model.learn(total_timesteps=cfg.trainer.timesteps, callback=CallbackList([cb]))
         mean_ret = cb._mean_return()
-        if mean_ret is not None:
-            wandb_run.log({"rollout/ep_rew_mean": mean_ret}, step=cfg.trainer.timesteps)
+        if mean_ret is not None and wandb_run is not None:
+            # SB3 often overshoots configured timesteps (n_steps alignment); never
+            # log a lower step than wandb already saw or W&B drops the point.
+            step = int(getattr(model, "num_timesteps", 0) or cfg.trainer.timesteps)
+            wandb_run.log({"rollout/ep_rew_mean": mean_ret}, step=step)
 
         ckpt_dir = Path(os.environ.get("ROBOLAB_CKPT_DIR", "checkpoints")) / run_id
         ckpt_dir.mkdir(parents=True, exist_ok=True)

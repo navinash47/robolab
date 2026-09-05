@@ -1,7 +1,9 @@
 # Phase 1 human test
 
 **Blunt status (2026-09-04):** Phase 1 **application code is in place** (core interfaces, MuJoCo adapter, `diffdrive_lidar`, `wall_follow`, `mlp`, SB3 custom policy, local runner, `POST /runs`, heartbeat + SSE, dashboard New Run).  
-**Auth key recovered from screenshot into `.env` (86-char `wandb_v1_`); GraphQL viewer probe returns 200.** Do **not** mark the Phase 1 human gate passed until a full local train shows COMPLETE + W&B curve. Phase 2 has **not** started.
+**Auth OK** (86-char `wandb_v1_`; GraphQL viewer 200; `/api/wandb/status` `auth_ok`).  
+**Full gate config ran end-to-end:** local / mlp / wall_follow / **50000** → run `23421c2da07b` **COMPLETE**, progress 100%, W&B https://wandb.ai/avinashnandyala2-umass-amherst/robolab/runs/bvwqbhg7 (mean return ~520). Smoke (`c686dda01a2c`) also COMPLETE earlier.  
+Do **not** mark the Phase 1 human gate passed until **you** open the UI and confirm the checklist below. Phase 2 has **not** started.
 
 ## Root cause of W&B 401 (diagnosed → fixed for auth)
 
@@ -15,7 +17,7 @@
 | `wandb` SDK | 0.29.0 (supports long keys) |
 | Env → trainer subprocess | **OK** — child inherits API env via `os.environ.copy()` / explicit forward |
 
-**Verdict:** prior 401 was a truncated/wrong key. Screenshot key is complete and authenticates. Human gate still needs a successful train+W&B path.
+**Verdict:** prior 401 was a truncated/wrong key. Screenshot key is complete and authenticates. Full 50k local train has COMPLETE + W&B URL; **human UI confirm still required**.
 
 ---
 
