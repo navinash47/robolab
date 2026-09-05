@@ -100,24 +100,32 @@ if [[ -d "${REPO_DIR}/.git" ]]; then
   log "Fetching existing clone at ${REPO_DIR}"
   git -C "${REPO_DIR}" remote set-url origin "${CLONE_URL}" || true
   git -C "${REPO_DIR}" fetch --all --tags || true
-  git -C "${REPO_DIR}" checkout --force "${GIT_SHA}"
+  git -C "${REPO_DIR}" checkout --force "${GIT_SHA}" \
+    || { report_fail "git checkout ${GIT_SHA} failed in existing clone"; exit 1; }
 else
   log "Cloning ${ROBOLAB_GIT_URL} @ ${GIT_SHA}"
   rm -rf "${REPO_DIR}"
-  git clone "${CLONE_URL}" "${REPO_DIR}"
-  git -C "${REPO_DIR}" checkout --force "${GIT_SHA}"
+  git clone "${CLONE_URL}" "${REPO_DIR}" \
+    || { report_fail "git clone failed for ${ROBOLAB_GIT_URL}"; exit 1; }
+  git -C "${REPO_DIR}" checkout --force "${GIT_SHA}" \
+    || { report_fail "git checkout ${GIT_SHA} failed after clone"; exit 1; }
 fi
 
 cd "${REPO_DIR}"
 
 if ! command -v uv >/dev/null 2>&1; then
   log "Installing uv"
-  curl -LsSf https://astral.sh/uv/install.sh | sh
+  curl -LsSf https://astral.sh/uv/install.sh | sh \
+    || { report_fail "uv install script failed"; exit 1; }
   export PATH="${HOME}/.local/bin:${PATH}"
 fi
 
 log "uv sync (cache=${UV_CACHE_DIR})"
-uv sync --all-packages --python 3.11
+if ! uv sync --all-packages --python 3.11 2>/tmp/robolab-uv-sync.err; then
+  tail -c 1500 /tmp/robolab-uv-sync.err > /tmp/robolab-uv-sync.tail || true
+  report_fail "uv sync failed: $(tr '\n' ' ' </tmp/robolab-uv-sync.tail | tr -cd '[:print:] ')"
+  exit 1
+fi
 
 CONFIG_PATH="${RUN_DIR}/config.yaml"
 python3 - <<PY
@@ -132,10 +140,13 @@ PY
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 
 log "Starting trainer run_id=${RUN_ID}"
-uv run --package robolab python -m robolab.train.trainer \
+if ! uv run --package robolab python -m robolab.train.trainer \
   --run-id "${RUN_ID}" \
   --config "${CONFIG_PATH}" \
-  --backend-url "${BACKEND_URL}"
+  --backend-url "${BACKEND_URL}"; then
+  report_fail "trainer exited non-zero (W&B/MuJoCo/config). Check pod logs."
+  exit 1
+fi
 
 TRAINER_OK=1
 log "Trainer finished OK"
