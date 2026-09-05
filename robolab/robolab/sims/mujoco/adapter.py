@@ -1,4 +1,4 @@
-"""MuJoCo SimAdapter + Gymnasium wall-follow env."""
+"""MuJoCo SimAdapter + Gymnasium diffdrive env (multi-task worlds)."""
 
 from __future__ import annotations
 
@@ -13,14 +13,20 @@ from gymnasium import spaces
 from robolab.core.run import DomainParams
 from robolab.core.sim import SimAdapter, register_sim
 from robolab.core.task import TaskSpec
-from robolab.robots.paths import ROBOTS_ROOT, robot_dir, scene_path, urdf_path
+from robolab.robots.paths import urdf_path
+from robolab.tasks.worlds import (
+    build_observation,
+    enrich_task_info,
+    layout_for_task,
+    mujoco_scene_path,
+)
 
 LIDAR_ANGLES_DEG = (0.0, 45.0, -45.0, 90.0, -90.0)
 LIDAR_MAX = 5.0
 
 
 class DiffDriveLidarEnv(gym.Env):
-    """Differential-drive robot with ray-cast lidar in a MuJoCo corridor."""
+    """Differential-drive robot with ray-cast lidar; world selected by task."""
 
     metadata = {"render_modes": ["rgb_array"], "render_fps": 30}
 
@@ -38,12 +44,14 @@ class DiffDriveLidarEnv(gym.Env):
         self.model = mujoco.MjModel.from_xml_path(str(model_path))
         self.data = mujoco.MjData(self.model)
         self._apply_domain()
+        self._layout = layout_for_task(task.name)
+        self._path_s = 0.0
 
-        n_rays = len(LIDAR_ANGLES_DEG)
+        obs_shape = tuple(task.observation.shape)
         self.observation_space = spaces.Box(
-            low=0.0,
+            low=float(task.observation.low),
             high=float(task.observation.high),
-            shape=(n_rays,),
+            shape=obs_shape,
             dtype=np.float32,
         )
         self.action_space = spaces.Box(
@@ -63,113 +71,45 @@ class DiffDriveLidarEnv(gym.Env):
         self._cam: mujoco.MjvCamera | None = None
 
         self._base_body = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "base")
-        # Only cast against world geoms (group 0); robot geoms are group 1.
         self._geomgroup = np.array([1, 0, 0, 0, 0, 0], dtype=np.uint8)
         self._geomid = np.zeros(1, dtype=np.int32)
-        self._left_joint = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, "left_wheel_joint")
-        self._right_joint = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, "right_wheel_joint")
+        self._left_joint = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_JOINT, "left_wheel_joint"
+        )
+        self._right_joint = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_JOINT, "right_wheel_joint"
+        )
 
     def _apply_domain(self) -> None:
-        # Friction scale on wheel geoms
         for name in ("left_wheel_geom", "right_wheel_geom", "floor"):
             gid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, name)
             if gid >= 0:
                 self.model.geom_friction[gid, 0] = self.domain.friction * (
                     1.5 if "wheel" in name else 1.0
                 )
-        # Control / physics timing (sim-to-sim honesty with PyBullet).
         ctrl_dt = 1.0 / max(1e-6, self.domain.control_hz)
         self.model.opt.timestep = ctrl_dt / max(1, self.domain.physics_substeps)
         self._control_dt = ctrl_dt
         self._physics_dt = float(self.model.opt.timestep)
 
-    def reset(self, *, seed: int | None = None, options: dict | None = None):
-        super().reset(seed=seed)
-        mujoco.mj_resetData(self.model, self.data)
-        # Spawn near corridor entrance with slight lateral/yaw noise
-        y = float(self.np_random.uniform(-0.25, 0.25))
-        yaw = float(self.np_random.uniform(-0.2, 0.2))
-        quat = np.array(
-            [np.cos(yaw / 2), 0.0, 0.0, np.sin(yaw / 2)],
-            dtype=np.float64,
-        )
-        self.data.qpos[:3] = np.array([0.3, y, 0.05])
-        self.data.qpos[3:7] = quat
-        self.data.qvel[:] = 0.0
-        mujoco.mj_forward(self.model, self.data)
-        self._steps = 0
-        self._success_streak = 0
-        obs = self._get_obs()
-        return obs, {"ranges": obs.copy()}
-
-    def step(self, action):
-        action = np.asarray(action, dtype=np.float64).reshape(-1)
-        action = np.clip(action, self.action_space.low, self.action_space.high)
-        v = float(action[0]) * self._v_max
-        w = float(action[1]) * self._w_max
-        dt = 1.0 / max(1e-6, self.domain.control_hz)
-
-        # Kinematic planar drive (stable for Phase 1 RL). MuJoCo used for
-        # kinematics + mj_ray lidar; full wheel dynamics deferred.
+    def _yaw(self) -> float:
         quat = self.data.qpos[3:7]
-        yaw = float(
+        return float(
             np.arctan2(
                 2 * (quat[0] * quat[3] + quat[1] * quat[2]),
                 1 - 2 * (quat[2] ** 2 + quat[3] ** 2),
             )
         )
-        yaw = yaw + w * dt
-        self.data.qpos[0] += v * np.cos(yaw) * dt
-        self.data.qpos[1] += v * np.sin(yaw) * dt
-        self.data.qpos[2] = 0.05
-        self.data.qpos[3:7] = np.array(
-            [np.cos(yaw / 2), 0.0, 0.0, np.sin(yaw / 2)],
-            dtype=np.float64,
-        )
-        self.data.qvel[:] = 0.0
-        if self._left_joint >= 0 and self._right_joint >= 0:
-            left = (v - w * self._half_track) / self._wheel_radius
-            right = (v + w * self._half_track) / self._wheel_radius
-            qadr_l = self.model.jnt_qposadr[self._left_joint]
-            qadr_r = self.model.jnt_qposadr[self._right_joint]
-            self.data.qpos[qadr_l] += left * dt
-            self.data.qpos[qadr_r] += right * dt
-        mujoco.mj_forward(self.model, self.data)
 
-        self._steps += 1
-        obs = self._get_obs()
-        info = {
-            "ranges": obs.copy(),
-            "position": self.data.xpos[self._base_body].copy(),
-            "forward_speed": v,
-            "steps": self._steps,
-            "control_hz": self.domain.control_hz,
-            "physics_substeps": self.domain.physics_substeps,
-            "control_dt": getattr(self, "_control_dt", 1.0 / self.domain.control_hz),
-            "physics_dt": getattr(self, "_physics_dt", self.model.opt.timestep),
-        }
-        reward = float(self.task.reward(info)) if self.task.reward else 0.0
-        terminated = bool(self.task.termination(info)) if self.task.termination else False
-        truncated = self._steps >= self.task.max_steps
-        if self.task.success and self.task.success(info):
-            self._success_streak += 1
-        else:
-            self._success_streak = 0
-        info["success"] = self._success_streak >= 20
-        info["is_success"] = info["success"]
-        return obs, reward, terminated, truncated, info
-
-    def _get_obs(self) -> np.ndarray:
+    def _lidar(self) -> np.ndarray:
         ranges = []
         pos = self.data.xpos[self._base_body].copy()
-        # Body x-axis in world
         xmat = self.data.xmat[self._base_body].reshape(3, 3)
         yaw = np.arctan2(xmat[1, 0], xmat[0, 0])
         origin = pos + np.array([0.0, 0.0, 0.12])
         for deg in LIDAR_ANGLES_DEG:
             ang = yaw + np.deg2rad(deg)
             direction = np.array([np.cos(ang), np.sin(ang), 0.0], dtype=np.float64)
-            # mj_ray returns distance or -1 if no hit (MuJoCo 3.x signature).
             dist = mujoco.mj_ray(
                 self.model,
                 self.data,
@@ -189,6 +129,105 @@ class DiffDriveLidarEnv(gym.Env):
             ranges.append(dist)
         return np.asarray(ranges, dtype=np.float32)
 
+    def _pack(self, ranges: np.ndarray, forward_speed: float) -> tuple[np.ndarray, dict]:
+        yaw = self._yaw()
+        pos = self.data.xpos[self._base_body].copy()
+        extra = enrich_task_info(
+            self.task.name,
+            self.task.meta,
+            position=pos,
+            yaw=yaw,
+            ranges=ranges,
+            forward_speed=forward_speed,
+            path_s=self._path_s,
+        )
+        obs = build_observation(self.task.name, ranges, extra["rel_goal"])
+        info = {
+            "ranges": ranges.copy(),
+            "position": pos,
+            "forward_speed": forward_speed,
+            "steps": self._steps,
+            "control_hz": self.domain.control_hz,
+            "physics_substeps": self.domain.physics_substeps,
+            "control_dt": self._control_dt,
+            "physics_dt": self._physics_dt,
+            **extra,
+        }
+        return obs.astype(np.float32), info
+
+    def reset(self, *, seed: int | None = None, options: dict | None = None):
+        super().reset(seed=seed)
+        mujoco.mj_resetData(self.model, self.data)
+        layout = self._layout
+        y = float(self.np_random.uniform(-layout.spawn_noise_y, layout.spawn_noise_y))
+        yaw = float(
+            layout.spawn_yaw
+            + self.np_random.uniform(-layout.spawn_noise_yaw, layout.spawn_noise_yaw)
+        )
+        quat = np.array(
+            [np.cos(yaw / 2), 0.0, 0.0, np.sin(yaw / 2)],
+            dtype=np.float64,
+        )
+        self.data.qpos[:3] = np.array(
+            [layout.spawn_xy[0], layout.spawn_xy[1] + y, 0.05]
+        )
+        self.data.qpos[3:7] = quat
+        self.data.qvel[:] = 0.0
+        mujoco.mj_forward(self.model, self.data)
+        self._steps = 0
+        self._success_streak = 0
+        self._path_s = 0.0
+        if self.task.name == "figure8_tracking":
+            self._path_s = 0.0
+        ranges = self._lidar()
+        obs, info = self._pack(ranges, 0.0)
+        return obs, info
+
+    def step(self, action):
+        action = np.asarray(action, dtype=np.float64).reshape(-1)
+        action = np.clip(action, self.action_space.low, self.action_space.high)
+        v = float(action[0]) * self._v_max
+        w = float(action[1]) * self._w_max
+        dt = self._control_dt
+
+        yaw = self._yaw()
+        yaw = yaw + w * dt
+        self.data.qpos[0] += v * np.cos(yaw) * dt
+        self.data.qpos[1] += v * np.sin(yaw) * dt
+        self.data.qpos[2] = 0.05
+        self.data.qpos[3:7] = np.array(
+            [np.cos(yaw / 2), 0.0, 0.0, np.sin(yaw / 2)],
+            dtype=np.float64,
+        )
+        self.data.qvel[:] = 0.0
+        if self._left_joint >= 0 and self._right_joint >= 0:
+            left = (v - w * self._half_track) / self._wheel_radius
+            right = (v + w * self._half_track) / self._wheel_radius
+            qadr_l = self.model.jnt_qposadr[self._left_joint]
+            qadr_r = self.model.jnt_qposadr[self._right_joint]
+            self.data.qpos[qadr_l] += left * dt
+            self.data.qpos[qadr_r] += right * dt
+        mujoco.mj_forward(self.model, self.data)
+
+        if self.task.name == "figure8_tracking":
+            # Advance path parameter roughly proportional to speed / path scale.
+            scale = float(self.task.meta.get("path_scale", 1.6))
+            self._path_s += (abs(v) * dt) / max(0.2, scale)
+
+        self._steps += 1
+        ranges = self._lidar()
+        obs, info = self._pack(ranges, v)
+        reward = float(self.task.reward(info)) if self.task.reward else 0.0
+        if self.task.success and self.task.success(info):
+            self._success_streak += 1
+        else:
+            self._success_streak = 0
+        info["success"] = self._success_streak >= 20
+        info["is_success"] = info["success"]
+        terminated = bool(self.task.termination(info)) if self.task.termination else False
+        truncated = self._steps >= self.task.max_steps
+        return obs, reward, terminated, truncated, info
+
     def render(self):
         if self.render_mode != "rgb_array":
             return None
@@ -199,7 +238,6 @@ class DiffDriveLidarEnv(gym.Env):
             self._cam.elevation = -35
             self._cam.azimuth = 90
             self._cam.distance = 3.5
-        # Track the robot so longer corridors stay in frame for playback.
         self._cam.lookat[:] = self.data.xpos[self._base_body]
         self._renderer.update_scene(self.data, camera=self._cam)
         return self._renderer.render()
@@ -215,14 +253,14 @@ class DiffDriveLidarEnv(gym.Env):
 class MujocoAdapter(SimAdapter):
     name = "mujoco"
 
-    def load_robot(self, urdf_path: Path, **kw: Any) -> dict[str, Any]:
-        """Return paths; MuJoCo Phase 1 trains from scene.xml mirroring the URDF."""
+    def load_robot(self, urdf_path_arg: Path, **kw: Any) -> dict[str, Any]:
         robot = kw.get("robot", "diffdrive_lidar")
-        u = Path(urdf_path) if urdf_path else urdf_path_fn(robot)
-        s = scene_path(robot)
+        task = kw.get("task", "wall_follow")
+        u = Path(urdf_path_arg) if urdf_path_arg else urdf_path(robot)
+        s = mujoco_scene_path(robot, str(task))
         if not s.exists():
             raise FileNotFoundError(f"MuJoCo scene missing: {s}")
-        return {"urdf": u, "scene": s, "robot": robot}
+        return {"urdf": u, "scene": s, "robot": robot, "task": task}
 
     def make_env(
         self,
@@ -231,10 +269,12 @@ class MujocoAdapter(SimAdapter):
         domain: DomainParams,
         render: bool = False,
     ) -> gym.Env:
-        if isinstance(robot, dict):
+        if isinstance(robot, dict) and "scene" in robot:
             model_path = Path(robot["scene"])
+            # Prefer scene matched to live task (load_robot may have used default).
+            model_path = mujoco_scene_path(str(robot.get("robot", "diffdrive_lidar")), task.name)
         else:
-            model_path = scene_path(str(robot))
+            model_path = mujoco_scene_path(str(robot), task.name)
         return DiffDriveLidarEnv(
             task=task,
             model_path=model_path,
@@ -254,8 +294,4 @@ class MujocoAdapter(SimAdapter):
         return frame
 
     def capabilities(self) -> set[str]:
-        return {"urdf", "mj_ray", "egl", "osmesa", "headless"}
-
-
-def urdf_path_fn(robot: str) -> Path:
-    return urdf_path(robot)
+        return {"urdf", "mj_ray", "egl", "osmesa", "headless", "multi_task"}
