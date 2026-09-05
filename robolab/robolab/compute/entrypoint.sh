@@ -155,31 +155,23 @@ path.write_bytes(raw)
 print(f"wrote {path} ({len(raw)} bytes)")
 PY
 
-# Prefer CUDA on the pod
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
-
+# Prefer CUDA on the pod, but probe first — a bad driver can SIGSEGV torch.
 log "Probing CUDA in a subprocess (segfaults must not kill the trainer)"
 set +e
-uv run --package robolab python -c "import torch; assert torch.cuda.is_available(); torch.zeros(1, device="cuda"); print("cuda_ok")"   >/tmp/robolab-cuda-probe.out 2>/tmp/robolab-cuda-probe.err
+uv run --package robolab python -c 'import torch; assert torch.cuda.is_available(); torch.zeros(1, device="cuda"); print("cuda_ok")' \
+  >/tmp/robolab-cuda-probe.out 2>/tmp/robolab-cuda-probe.err
 cuda_rc=$?
 set -e
 if [[ "${cuda_rc}" -ne 0 ]] || ! grep -q cuda_ok /tmp/robolab-cuda-probe.out 2>/dev/null; then
   log "CUDA probe failed (rc=${cuda_rc}) — forcing CUDA_VISIBLE_DEVICES= and device=cpu"
   export CUDA_VISIBLE_DEVICES=""
-  # Rewrite device in the written config if present
   if [[ -f "${CONFIG_PATH}" ]]; then
-    python3 - <<'PY2'
-import pathlib, re
-p=pathlib.Path("${CONFIG_PATH}")
-# config is JSON (from model_dump_json) written as bytes earlier — actually yaml? 
-# write_run_config / entrypoint writes raw CONFIG_B64 which is JSON from model_dump_json
-text=p.read_text()
-text2=re.sub(r'"device"\s*:\s*"cuda"', '"device": "cpu"', text)
-text2=re.sub(r"device:\s*cuda", "device: cpu", text2)
-p.write_text(text2)
-print("rewrote device->cpu in", p)
-PY2
+    python3 -c "import pathlib,re,sys; p=pathlib.Path(sys.argv[1]); t=p.read_text(); t=re.sub(r'\"device\"\\s*:\\s*\"cuda\"', '\"device\": \"cpu\"', t); t=re.sub(r'device:\\s*cuda', 'device: cpu', t); p.write_text(t); print('rewrote', p)" \
+      "${CONFIG_PATH}"
   fi
+else
+  export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+  log "CUDA probe OK"
 fi
 
 log "Starting trainer run_id=${RUN_ID}"
