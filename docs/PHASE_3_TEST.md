@@ -1,6 +1,6 @@
 # Phase 3 test — human gate checklist
 
-**Blunt status (Sep 4 night resume + capacity fix):** Phase 3 **not gate-passed** until a paid Secure-cloud smoke completes end-to-end. Three FAILED UI rows explained:
+**Blunt status (Sep 4 late):** Paid Secure smoke **SUCCEEDED** — run `873109d8da56` (`phase3-secure-smoke-2k-l`) reached **COMPLETE 2048/2048** on RTX 4090 Secure EU-RO-1 (~$0.02), W&B linked, pod gone. Phase 3 still **not fully human-gate-passed** until you confirm UI checklist (watchdog kill test etc.). Three FAILED UI rows explained:
 
 | Run | Why FAILED at 0/2048 |
 |---|---|
