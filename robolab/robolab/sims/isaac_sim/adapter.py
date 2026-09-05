@@ -14,9 +14,10 @@ from robolab.core.task import TaskSpec
 _MSG = (
     "Simulator 'isaac_sim' is a capability-flagged stub for the Isaac Sim / "
     "Omniverse runtime (distinct from 'isaaclab', the RL framework). "
-    "Install Isaac Sim from NVIDIA, then use Isaac Lab — RoboLab has no "
-    "in-process Isaac Sim adapter yet. Use mujoco or pybullet now. "
-    "See docs/SIMULATORS.md."
+    "Isaac Sim is Linux/Windows + NVIDIA only — NOT macOS. "
+    "RoboLab has no in-process Isaac Sim adapter yet and does not bake the "
+    "multi-GB Omniverse stack into the default RunPod worker. "
+    "Use mujoco/pybullet/genesis on RunPod Secure; see docs/ISAAC_INSTALL.md."
 )
 
 

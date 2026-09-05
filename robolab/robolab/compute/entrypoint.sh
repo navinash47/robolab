@@ -135,6 +135,38 @@ path.write_bytes(raw)
 print(f"wrote {path} ({len(raw)} bytes)")
 PY
 
+# Optional heavy sims: install on the network volume cache (no Mac; no default image bloat).
+# Parse sim without PyYAML (may be unavailable before uv sync).
+SIM_NAME=$(
+  CONFIG_PATH="${CONFIG_PATH}" python3 - <<'PY'
+import json, os, pathlib, re
+raw = pathlib.Path(os.environ["CONFIG_PATH"]).read_text()
+# Config is JSON from model_dump_json() base64; still accept YAML-ish `sim:`.
+try:
+    print((json.loads(raw).get("sim") or "").strip())
+except Exception:
+    m = re.search(r'(?m)^\s*sim:\s*["\']?([A-Za-z0-9_]+)', raw)
+    print(m.group(1) if m else "")
+PY
+)
+if [[ "${SIM_NAME}" == "genesis" || "${ROBOLAB_INSTALL_GENESIS:-}" == "1" ]]; then
+  log "Installing genesis-world (optional; cached under ${UV_CACHE_DIR})"
+  export ROBOLAB_GENESIS_GPU="${ROBOLAB_GENESIS_GPU:-1}"
+  if ! uv pip install --python 3.11 genesis-world 2>/tmp/robolab-genesis-install.err; then
+    # Prefer project venv after sync
+    if ! uv run --package robolab pip install genesis-world 2>>/tmp/robolab-genesis-install.err; then
+      tail -c 1200 /tmp/robolab-genesis-install.err > /tmp/robolab-genesis-install.tail || true
+      report_fail "genesis-world install failed: $(tr '\n' ' ' </tmp/robolab-genesis-install.tail | tr -cd '[:print:] ')"
+      exit 1
+    fi
+  fi
+fi
+if [[ "${SIM_NAME}" == "isaaclab" || "${SIM_NAME}" == "isaac_sim" ]]; then
+  # Isaac is multi-GB — not auto-installed. Fail fast with pointer (adapter is still a stub).
+  report_fail "sim=${SIM_NAME} requires NVIDIA Isaac on Linux GPU. This worker image does not bake Isaac (multi-GB). See docs/ISAAC_INSTALL.md — approve a separate :isaac image before rebuild. Mac cannot run Isaac."
+  exit 1
+fi
+
 log "Ensuring xvfb/glfw for headless MuJoCo"
 if ! command -v xvfb-run >/dev/null 2>&1 || ! ldconfig -p 2>/dev/null | grep -qi glfw; then
   apt-get update -qq \

@@ -282,6 +282,11 @@ def create_training_pod(
         pod_env["GITHUB_TOKEN"] = gh
     # Allow override; default OSMesa is safest across Secure GPU hosts.
     pod_env["MUJOCO_GL"] = (os.environ.get("MUJOCO_GL") or "glfw").strip() or "glfw"
+    if (cfg.sim or "").strip() == "genesis":
+        pod_env["ROBOLAB_INSTALL_GENESIS"] = "1"
+        pod_env["ROBOLAB_GENESIS_GPU"] = (
+            (os.environ.get("ROBOLAB_GENESIS_GPU") or "1").strip() or "1"
+        )
 
     if not pod_env["WANDB_API_KEY"]:
         raise RunPodConfigError(

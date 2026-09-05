@@ -13,10 +13,13 @@ from robolab.core.task import TaskSpec
 
 _MSG = (
     "Simulator 'isaaclab' is a capability-flagged stub. "
-    "Isaac Lab requires a heavy NVIDIA / Omniverse install "
+    "Isaac Lab requires Linux + NVIDIA GPU (Ubuntu 22.04/24.04, ≥16GB VRAM) — "
+    "NOT macOS. Install via Isaac Sim pip/binary then Isaac Lab source "
     "(https://isaac-sim.github.io/IsaacLab/). "
-    "RoboLab does not bundle Isaac — use mujoco or pybullet for training now. "
-    "See docs/SIMULATORS.md and docs/PHASE_5B_APIS.md."
+    "RoboLab does not bake Isaac into the default worker (multi-GB). "
+    "Run wall_follow on RunPod Secure (EU-RO-1) with mujoco/pybullet/genesis; "
+    "approve a separate :isaac worker image before Isaac smoke. "
+    "See docs/ISAAC_INSTALL.md."
 )
 
 
