@@ -111,22 +111,29 @@ def train(cfg: RunConfig, run_id: str, backend_url: str) -> dict:
 
         device = cfg.trainer.device
         if device == "cuda":
-            import torch
+            import subprocess
+            import sys
 
-            try:
-                ok = bool(torch.cuda.is_available() and torch.cuda.device_count() > 0)
-                if ok:
-                    # Force a tiny alloc so driver mismatches surface before PPO.
-                    _ = torch.zeros(1, device="cuda")
-            except Exception as cuda_exc:
-                ok = False
-                print(f"CUDA probe failed ({cuda_exc}); falling back to CPU", flush=True)
-            if not ok:
+            probe = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "import torch; assert torch.cuda.is_available(); "
+                    "torch.zeros(1, device='cuda'); print('cuda_ok')",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+            if probe.returncode != 0 or "cuda_ok" not in (probe.stdout or ""):
+                detail = ((probe.stderr or "") + (probe.stdout or ""))[-400:]
                 print(
-                    "CUDA unavailable on this pod — falling back to device=cpu "
-                    f"(driver/torch mismatch). Requested device was {device!r}.",
+                    f"CUDA subprocess probe failed (rc={probe.returncode}): {detail}\n"
+                    "Falling back to device=cpu and hiding GPUs.",
                     flush=True,
                 )
+                os.environ["CUDA_VISIBLE_DEVICES"] = ""
                 device = "cpu"
                 cfg = cfg.model_copy(
                     update={"trainer": cfg.trainer.model_copy(update={"device": "cpu"})}
