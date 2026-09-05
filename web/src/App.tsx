@@ -458,23 +458,34 @@ export default function App() {
             RoboLab
           </h1>
         </div>
-        <div className="text-right">
-          <p className="text-sm font-medium text-[var(--ok)]" data-testid="budget">
-            {remainingLabel}
-          </p>
-          <p
-            className={`text-xs ${wandbOk ? "text-[var(--ok)]" : "text-red-700"}`}
-            data-testid="wandb-status"
-            title={wandb?.detail ?? ""}
+        <div className="flex items-center gap-6">
+          <a
+            href="http://localhost:8000/spend"
+            target="_blank"
+            rel="noopener noreferrer"
+            data-testid="spend-link"
+            className="text-sm font-medium text-[var(--accent)] underline-offset-2 hover:underline"
           >
-            {wandbLabel}
-          </p>
-          {budget !== null && (
-            <p className="text-xs text-[var(--muted)]">
-              Cap {formatUsd(budget.budget_usd_cap)} · spent{" "}
-              {formatUsd(budget.month_spend_usd)}
+            Spend
+          </a>
+          <div className="text-right">
+            <p className="text-sm font-medium text-[var(--ok)]" data-testid="budget">
+              {remainingLabel}
             </p>
-          )}
+            <p
+              className={`text-xs ${wandbOk ? "text-[var(--ok)]" : "text-red-700"}`}
+              data-testid="wandb-status"
+              title={wandb?.detail ?? ""}
+            >
+              {wandbLabel}
+            </p>
+            {budget !== null && (
+              <p className="text-xs text-[var(--muted)]">
+                Cap {formatUsd(budget.budget_usd_cap)} · spent{" "}
+                {formatUsd(budget.month_spend_usd)}
+              </p>
+            )}
+          </div>
         </div>
       </header>
 

@@ -12,7 +12,7 @@ from sqlmodel import select
 
 from robolab_api.budget import get_budget
 from robolab_api.db import Run, SessionDep, create_db_and_tables
-from robolab_api.routes import compare_router, runs_router
+from robolab_api.routes import compare_router, costs_router, runs_router
 from robolab_api.wandb_status import get_wandb_status
 from robolab_api.watchdog import watchdog_loop
 
@@ -75,6 +75,7 @@ app.add_middleware(
 
 app.include_router(runs_router)
 app.include_router(compare_router)
+app.include_router(costs_router)
 
 
 @app.get("/health")
