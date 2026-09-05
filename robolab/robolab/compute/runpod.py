@@ -281,7 +281,7 @@ def create_training_pod(
     if gh:
         pod_env["GITHUB_TOKEN"] = gh
     # Allow override; default OSMesa is safest across Secure GPU hosts.
-    pod_env["MUJOCO_GL"] = (os.environ.get("MUJOCO_GL") or "osmesa").strip() or "osmesa"
+    pod_env["MUJOCO_GL"] = (os.environ.get("MUJOCO_GL") or "glfw").strip() or "glfw"
 
     if not pod_env["WANDB_API_KEY"]:
         raise RunPodConfigError(

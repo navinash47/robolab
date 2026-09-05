@@ -78,29 +78,9 @@ trap cleanup EXIT
 : "${RUNPOD_API_KEY:?RUNPOD_API_KEY required}"
 
 export WANDB_PROJECT="${WANDB_PROJECT:-robolab}"
-# Prefer NVIDIA EGL on GPU machines; OSMesa otherwise. Pure EGL without NVIDIA
-# libs previously failed with eglQueryString NoneType.
-if [[ -z "${MUJOCO_GL:-}" ]]; then
-  if [[ -e /dev/nvidia0 ]] || [[ -n "${NVIDIA_VISIBLE_DEVICES:-}" ]]; then
-    export MUJOCO_GL=egl
-  else
-    export MUJOCO_GL=osmesa
-  fi
-fi
 export PYTHONUNBUFFERED=1
 export UV_CACHE_DIR="${UV_CACHE_DIR:-/workspace/.cache/uv}"
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/workspace/.cache}"
-
-# Ensure OSMesa / EGL bits exist (idempotent; needs root — RunPod default).
-if ! ldconfig -p 2>/dev/null | grep -qi osmesa; then
-  log "Installing OSMesa/EGL GL libs for MuJoCo"
-  apt-get update -qq \
-    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      libosmesa6 libgl1-mesa-glx libegl1 libgles2 libglib2.0-0 \
-    && rm -rf /var/lib/apt/lists/* \
-    || log "WARN: apt GL install failed — MuJoCo may still crash"
-fi
-log "MUJOCO_GL=${MUJOCO_GL}"
 
 REPO_DIR="${REPO_DIR:-/workspace/robolab}"
 RUN_DIR="/workspace/runs/${RUN_ID}"
@@ -155,6 +135,18 @@ path.write_bytes(raw)
 print(f"wrote {path} ({len(raw)} bytes)")
 PY
 
+log "Ensuring xvfb/glfw for headless MuJoCo"
+if ! command -v xvfb-run >/dev/null 2>&1 || ! ldconfig -p 2>/dev/null | grep -qi glfw; then
+  apt-get update -qq \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      xvfb libglfw3 libglfw3-dev libosmesa6 libgl1-mesa-glx libegl1 libgles2 \
+    && rm -rf /var/lib/apt/lists/* \
+    || log "WARN: xvfb/glfw apt install failed"
+fi
+# GLFW+xvfb is the most reliable headless path on Secure GPU hosts.
+export MUJOCO_GL="${MUJOCO_GL:-glfw}"
+log "MUJOCO_GL=${MUJOCO_GL}"
+
 # Prefer CUDA on the pod, but probe first — a bad driver can SIGSEGV torch.
 log "Probing CUDA in a subprocess (segfaults must not kill the trainer)"
 set +e
@@ -176,11 +168,16 @@ fi
 
 log "Starting trainer run_id=${RUN_ID}"
 set +e
-uv run --package robolab python -m robolab.train.trainer \
+TRAIN_CMD=(uv run --package robolab python -m robolab.train.trainer \
   --run-id "${RUN_ID}" \
   --config "${CONFIG_PATH}" \
-  --backend-url "${BACKEND_URL}" \
-  > /tmp/robolab-trainer.out 2> /tmp/robolab-trainer.err
+  --backend-url "${BACKEND_URL}")
+if command -v xvfb-run >/dev/null 2>&1; then
+  xvfb-run -a -s "-screen 0 640x480x24" "${TRAIN_CMD[@]}" \
+    > /tmp/robolab-trainer.out 2> /tmp/robolab-trainer.err
+else
+  "${TRAIN_CMD[@]}" > /tmp/robolab-trainer.out 2> /tmp/robolab-trainer.err
+fi
 trainer_rc=$?
 set -e
 if [[ -s /tmp/robolab-trainer.out ]]; then

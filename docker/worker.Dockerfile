@@ -3,7 +3,7 @@ FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
-    MUJOCO_GL=osmesa \
+    MUJOCO_GL=glfw \
     PATH=/root/.local/bin:$PATH \
     UV_CACHE_DIR=/workspace/.cache/uv \
     XDG_CACHE_HOME=/workspace/.cache
