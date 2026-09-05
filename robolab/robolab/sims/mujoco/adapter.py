@@ -72,6 +72,7 @@ class DiffDriveLidarEnv(gym.Env):
         self._steps = 0
         self._success_streak = 0
         self._renderer: mujoco.Renderer | None = None
+        self._cam: mujoco.MjvCamera | None = None
 
         self._base_body = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "base")
         # Only cast against world geoms (group 0); robot geoms are group 1.
@@ -199,13 +200,21 @@ class DiffDriveLidarEnv(gym.Env):
             return None
         if self._renderer is None:
             self._renderer = mujoco.Renderer(self.model, height=240, width=320)
-        self._renderer.update_scene(self.data)
+            self._cam = mujoco.MjvCamera()
+            mujoco.mjv_defaultCamera(self._cam)
+            self._cam.elevation = -35
+            self._cam.azimuth = 90
+            self._cam.distance = 3.5
+        # Track the robot so longer corridors stay in frame for playback.
+        self._cam.lookat[:] = self.data.xpos[self._base_body]
+        self._renderer.update_scene(self.data, camera=self._cam)
         return self._renderer.render()
 
     def close(self):
         if self._renderer is not None:
             self._renderer.close()
             self._renderer = None
+        self._cam = None
 
 
 @register_sim("mujoco")

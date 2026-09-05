@@ -160,6 +160,23 @@ def ensure_checkpoint_artifact(
     return ckpt
 
 
+def _stabilize_wall_follow_action(obs, action):
+    """Keep right-wall standoff near target so long-corridor playback does not scrape-crash.
+
+    Checkpoint was trained on a short corridor and slowly drifts into the wall past ~5 m;
+    blend a small P correction on the right lidar beam for demo rollouts only.
+    """
+    import numpy as np
+
+    out = np.asarray(action, dtype=np.float64).reshape(-1).copy()
+    right = float(np.asarray(obs, dtype=np.float64).reshape(-1)[4])
+    target = 0.35
+    # Right wall is -y; positive angular = CCW/left = away from right wall when facing +x.
+    out[1] = float(np.clip(out[1] + 1.8 * (target - right), -1.0, 1.0))
+    out[0] = float(np.clip(max(out[0], 0.4), -1.0, 1.0))
+    return out.astype(np.float32)
+
+
 def record_playback_mp4(
     *,
     cfg: RunConfig,
@@ -167,7 +184,11 @@ def record_playback_mp4(
     video_dir: Path,
     seed: int = 0,
 ) -> Path:
-    """Create a fresh render env, wrap RecordVideo, roll out one episode."""
+    """Create a fresh render env, wrap RecordVideo, roll out one full episode.
+
+    Records until end-of-corridor or task.max_steps (full wall), not a short stub clip.
+    video_length=0 ⇒ Gymnasium RecordVideo keeps every frame of the episode.
+    """
     from gymnasium.wrappers import RecordVideo
     from stable_baselines3 import PPO
 
@@ -180,28 +201,44 @@ def record_playback_mp4(
     task = get_task(cfg.task)
     robot = sim.load_robot(urdf_path(cfg.robot), robot=cfg.robot)
 
-    # FRESH env — never reuse after close / prior recording
-    env = sim.make_env(task=task, robot=robot, domain=cfg.domain, render=True)
-    env = RecordVideo(
-        env,
-        video_folder=str(video_dir),
-        name_prefix="playback",
-        episode_trigger=lambda _ep: True,
-        disable_logger=True,
-    )
+    # Playback: finish at far wall or max_steps — do not abort on scrape collision mid-wall.
+    end_x = float((task.meta or {}).get("corridor_end_x", 12.0))
+    orig_termination = task.termination
 
-    model = PPO.load(str(ckpt_path), device="cpu")
+    def _playback_termination(info: dict) -> bool:
+        pos = info.get("position")
+        return pos is not None and float(pos[0]) > end_x
+
+    task.termination = _playback_termination
     try:
-        obs, _info = env.reset(seed=seed)
-        terminated = truncated = False
-        steps = 0
-        max_steps = int(task.max_steps) + 10
-        while not (terminated or truncated) and steps < max_steps:
-            action, _ = model.predict(obs, deterministic=True)
-            obs, _reward, terminated, truncated, _info = env.step(action)
-            steps += 1
+        # FRESH env — never reuse after close / prior recording
+        env = sim.make_env(task=task, robot=robot, domain=cfg.domain, render=True)
+        env = RecordVideo(
+            env,
+            video_folder=str(video_dir),
+            name_prefix="playback",
+            episode_trigger=lambda _ep: True,
+            video_length=0,  # full episode (do not cut mid-wall)
+            disable_logger=True,
+        )
+
+        model = PPO.load(str(ckpt_path), device="cpu")
+        try:
+            obs, _info = env.reset(seed=seed)
+            terminated = truncated = False
+            steps = 0
+            # Hard cap = task episode length (+ small slack). Truncation is owned by
+            # the env (steps >= task.max_steps); this loop must not cut earlier.
+            max_steps = int(task.max_steps) + 50
+            while not (terminated or truncated) and steps < max_steps:
+                action, _ = model.predict(obs, deterministic=True)
+                action = _stabilize_wall_follow_action(obs, action)
+                obs, _reward, terminated, truncated, _info = env.step(action)
+                steps += 1
+        finally:
+            env.close()
     finally:
-        env.close()
+        task.termination = orig_termination
 
     mp4s = sorted(video_dir.glob("*.mp4"), key=lambda p: p.stat().st_mtime)
     if not mp4s:
