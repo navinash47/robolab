@@ -4,12 +4,12 @@ Exact RunPod / Docker / env signatures for Phase 3. **Doc wins** if it contradic
 
 Sources (checked 2026-09-04):
 
+- Live OpenAPI: [`https://api.runpod.io/v2/openapi.json`](https://api.runpod.io/v2/openapi.json) — **preferred control-plane shape**
+- Cursor MCP `user-runpod` (OAuth) — curated projection of REST v2; **not** RoboLab app auth
 - [Agent setup (official)](https://docs.runpod.io/agent-setup.md) — skills + hosted MCP for the coding agent
-- [runpod-python `ctl_commands.py`](https://github.com/runpod/runpod-python/blob/main/runpod/api/ctl_commands.py) (`runpod` PyPI ≈ 1.12.x)
-- [Manage Pods (REST)](https://docs.runpod.io/pods/manage-pods)
-- [Create Pod REST `POST /pods`](https://docs.runpod.io/api-reference/pods/POST/pods)
+- [runpod-python `ctl_commands.py`](https://github.com/runpod/runpod-python/blob/main/runpod/api/ctl_commands.py) (`runpod` PyPI ≈ 1.12.x) — GraphQL wrappers still used for create/list/price in-app
+- [Manage Pods (REST)](https://docs.runpod.io/pods/manage-pods) — still documents `rest.runpod.io/v1` in places
 - [Network volumes](https://docs.runpod.io/storage/network-volumes)
-- GPU price fields via SDK GraphQL `get_gpu` / `get_gpus`
 
 ## Conflict: `agent-setup.md` vs Phase 3 RoboLab app
 
@@ -22,8 +22,8 @@ Official [agent-setup.md](https://docs.runpod.io/agent-setup.md) is **agent onbo
 | Concern | Prefer | Why |
 |---|---|---|
 | Cursor/agent infra tools | Hosted MCP + skills per agent-setup | Official agent path |
-| RoboLab backend `create_pod` / watchdog / entrypoint self-terminate | `RUNPOD_API_KEY` in project `.env` + `runpod-python` / REST DELETE | App runs headlessly outside the IDE; OAuth MCP cannot replace process env |
-| Entrypoint `DELETE https://rest.runpod.io/v1/pods/$ID` | Keep (matches Manage Pods docs + build prompt) | Skills note v1 is buggy for *some* control ops; terminate DELETE remains the documented self-kill path |
+| RoboLab backend `create_pod` / watchdog / entrypoint self-terminate | `RUNPOD_API_KEY` in project `.env` + SDK create + **REST v2 DELETE** | App runs headlessly outside the IDE; OAuth MCP cannot replace process env |
+| Entrypoint self-kill | `DELETE https://api.runpod.io/v2/pods/$ID` (v1 fallback) | Docs/OpenAPI: terminate is irreversible delete; v2 is the live contract |
 
 **Phase 3 still requires `RUNPOD_API_KEY` (and related) in `.env` for the FastAPI runner** — that is separate from agent MCP OAuth and is **not** set up by agent-setup. Do not commit those secrets.
 
@@ -37,17 +37,72 @@ runpod.api_key = os.environ["RUNPOD_API_KEY"]
 # SDK also reads RUNPOD_API_KEY from the environment if set.
 ```
 
-REST (self-terminate / DELETE):
+REST (self-terminate / DELETE / any v2 call):
 
 ```http
 Authorization: Bearer <RUNPOD_API_KEY>
 ```
 
-Base URL: `https://rest.runpod.io/v1`
+| API | Base URL | Used for |
+|---|---|---|
+| **REST v2 (preferred)** | `https://api.runpod.io/v2` | Terminate DELETE; OpenAPI truth; MCP |
+| REST v1 (legacy docs) | `https://rest.runpod.io/v1` | Entrypoint fallback only |
+| GraphQL via `runpod-python` | SDK internals | App `create_pod` / `get_pods` / `get_gpu` today |
 
-## `runpod.create_pod` (Python SDK — primary launch path)
+## REST v2 create pod (preferred shape — OpenAPI `CreatePodRequest`)
 
-Exact signature from current `runpod-python` source:
+MCP `create-pod` and older prompt/docs use camelCase (`imageName`, `gpuTypeIds`, `networkVolumeId`). **Live v2** uses nested `gpu` / `mounts` / `image` / `cloud`:
+
+```bash
+curl -sS -X POST "https://api.runpod.io/v2/pods" \
+  -H "Authorization: Bearer $RUNPOD_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "robolab-<run_id>",
+    "image": "'"$ROBOLAB_WORKER_IMAGE"'",
+    "cloud": "COMMUNITY",
+    "gpu": { "id": "NVIDIA GeForce RTX 4090", "count": 1 },
+    "disk": 30,
+    "mounts": {
+      "network": [
+        { "volumeId": "'"$RUNPOD_NETWORK_VOLUME_ID"'", "path": "/workspace" }
+      ]
+    },
+    "env": {
+      "RUN_ID": "<run_id>",
+      "GIT_SHA": "<sha>",
+      "CONFIG_B64": "<…>",
+      "WANDB_API_KEY": "…",
+      "WANDB_PROJECT": "robolab",
+      "RUNPOD_API_KEY": "…",
+      "BACKEND_URL": "https://…",
+      "MAX_RUNTIME_MIN": "120",
+      "ROBOLAB_GIT_URL": "https://github.com/…/robolab.git"
+    }
+  }'
+```
+
+Network volume create (v2 / MCP):
+
+```bash
+# OpenAPI: POST /v2/network-volumes  { name, size, dataCenter, type? }
+# MCP: create-network-volume(name, size, dataCenterId, volumeType?)
+```
+
+### Flags vs build prompt / MCP camelCase
+
+| Prompt / MCP assumption | Actual REST v2 OpenAPI | What we do |
+|---|---|---|
+| `POST rest.runpod.io/v1/pods` + `imageName` / `gpuTypeIds` / `networkVolumeId` | `POST api.runpod.io/v2/pods` + `image` / `gpu.id` / `mounts.network[].volumeId` | Document v2 as truth; app still creates via **SDK GraphQL** (stable today) |
+| `pod_id = runpod.create_pod(...)` as if string | SDK returns **dict** with `id` | Use `pod["id"]` |
+| Mount at `/workspace` | v2 `path` has **no default** — must set explicitly; SDK default `/runpod-volume` | Pass `/workspace` |
+| `cloudType: COMMUNITY` | v2 field is `cloud` (default `SECURE`) | Pass COMMUNITY via SDK `cloud_type` / env `RUNPOD_CLOUD_TYPE` |
+| Entrypoint `DELETE rest.runpod.io/v1/pods/$ID` | Prefer `DELETE api.runpod.io/v2/pods/$ID` | Entrypoint tries v2 first, then v1 |
+| MCP OAuth enough for app | MCP ≠ process env | Refuse launch without `.env` `RUNPOD_API_KEY` |
+
+## `runpod.create_pod` (Python SDK — current app launch path)
+
+Exact signature from current `runpod-python` source (GraphQL under the hood — **not** the v2 JSON body above):
 
 ```python
 def create_pod(
@@ -66,7 +121,7 @@ def create_pod(
     min_memory_in_gb: int = 1,
     docker_args: str = "",
     ports: Optional[str] = None,                # e.g. "8888/http,22/tcp"
-    volume_mount_path: str = "/runpod-volume",  # ← see flag below
+    volume_mount_path: str = "/runpod-volume",  # ← pass "/workspace"
     env: Optional[dict] = None,                 # {KEY: "value", ...}
     template_id: Optional[str] = None,
     network_volume_id: Optional[str] = None,
@@ -109,16 +164,6 @@ pod_id = pod["id"]
 
 Fallback GPU ids if preferred unavailable / create fails: `NVIDIA GeForce RTX 3090`, `NVIDIA RTX A4000` (exact `id` strings from `get_gpus()`).
 
-### Flags vs build prompt
-
-| Prompt assumption | Actual docs / SDK | What we do |
-|---|---|---|
-| `pod_id = runpod.create_pod(...)` as if string | Returns **dict** with `id` | Use `pod["id"]` |
-| Mount at `/workspace` | SDK default `volume_mount_path="/runpod-volume"` | Pass `volume_mount_path="/workspace"` explicitly |
-| `cloud_type="COMMUNITY"` | SDK default `"ALL"`; REST CreatePod default `SECURE` | Pass `"COMMUNITY"` (or `RUNPOD_CLOUD_TYPE`) |
-| REST body camelCase (`gpuTypeIds`, …) | SDK snake_case wrappers over GraphQL | Prefer **SDK** for create/list/get/price; REST DELETE for self-terminate (matches prompt) |
-| Network volume auto | If `network_volume_id` set and `data_center_id` is None, SDK looks up volume’s data center from `get_user()` | Rely on SDK behavior |
-
 ## List / get / terminate / prices
 
 ```python
@@ -130,14 +175,22 @@ runpod.get_pods() -> list[dict]   # id, costPerHr, desiredStatus, env, uptimeSec
 runpod.get_pod(pod_id: str) -> dict
 
 runpod.stop_pod(pod_id: str) -> dict
-runpod.terminate_pod(pod_id: str) -> None   # GraphQL terminate; no useful return
+runpod.terminate_pod(pod_id: str) -> None   # GraphQL; app prefers REST v2 DELETE first
 ```
 
 Hourly rate for ledger: prefer `pod["costPerHr"]` after create/get; else `get_gpu(...).get("communityPrice")` (COMMUNITY) or `securePrice` (SECURE).
 
-## REST terminate (entrypoint EXIT trap)
+## REST terminate (entrypoint EXIT trap + watchdog)
 
-Matches [Manage Pods → Terminate](https://docs.runpod.io/pods/manage-pods):
+**Preferred (OpenAPI `DELETE /v2/pods/{id}`):**
+
+```bash
+curl -sS -X DELETE \
+  "https://api.runpod.io/v2/pods/${RUNPOD_POD_ID}" \
+  -H "Authorization: Bearer ${RUNPOD_API_KEY}"
+```
+
+Legacy fallback (Manage Pods docs / build prompt):
 
 ```bash
 curl -sS -X DELETE \
@@ -147,31 +200,12 @@ curl -sS -X DELETE \
 
 `RUNPOD_POD_ID` is injected by the RunPod runtime into the container environment.
 
-Equivalent from backend watchdog: `runpod.terminate_pod(pod_id)`.
-
-## REST create (reference only — not primary)
-
-```bash
-curl --request POST \
-  --url https://rest.runpod.io/v1/pods \
-  --header "Authorization: Bearer $RUNPOD_API_KEY" \
-  --header "Content-Type: application/json" \
-  --data '{
-    "name": "my-pod",
-    "imageName": "runpod/pytorch:…",
-    "gpuTypeIds": ["NVIDIA GeForce RTX 4090"],
-    "gpuCount": 1,
-    "containerDiskInGb": 50,
-    "networkVolumeId": "…",
-    "volumeMountPath": "/workspace",
-    "cloudType": "COMMUNITY",
-    "env": { "RUN_ID": "…" }
-  }'
-```
+Backend watchdog: `terminate_pod()` tries REST v2 DELETE, then SDK GraphQL.
 
 ## Worker image + entrypoint
 
-- Base: `runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04` (matches existing stub)
+- Base: `runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04`
+- Build: `make worker-image IMAGE=user/robolab-worker:phase3` then `docker push …`
 - Image must be **pushed** to a registry RunPod can pull (`ROBOLAB_WORKER_IMAGE`)
 - `entrypoint.sh`: clone `ROBOLAB_GIT_URL` at `GIT_SHA` → `uv sync` → train → **always** REST DELETE on EXIT
 
@@ -179,7 +213,7 @@ curl --request POST \
 
 | Var | Required for runpod launch | Meaning |
 |---|---|---|
-| `RUNPOD_API_KEY` | yes | Account API key |
+| `RUNPOD_API_KEY` | yes | Account API key (≠ MCP OAuth) |
 | `RUNPOD_NETWORK_VOLUME_ID` | yes | Persistent `/workspace` volume id |
 | `ROBOLAB_WORKER_IMAGE` | yes | Image RunPod pulls (e.g. `user/robolab-worker:phase3`) |
 | `ROBOLAB_GIT_URL` | yes | Clone URL for `GIT_SHA` checkout on the pod |
@@ -206,7 +240,7 @@ Override is **not** implemented (cost safety > convenience).
 Every 60s (and orphan sweep on startup):
 
 1. Unknown `RUN_ID` on a live pod → terminate + `KILLED_BY_WATCHDOG`
-2. Heartbeat `updated_at` stale **> 10 minutes** → terminate + kill label
+2. Heartbeat `updated_at` stale **> 10 minutes** → terminate + kill label (skipped while still `PROVISIONING`)
 3. Runtime **> `MAX_RUNTIME_MIN`** → terminate + kill label
 4. Accrued cost **> run `budget_usd`** (when `budget_usd > 0`) → terminate + kill label
 5. Month `CostLedger` sum ≥ `BUDGET_USD_CAP` → **refuse new launches**
