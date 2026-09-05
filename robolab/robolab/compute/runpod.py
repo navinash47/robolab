@@ -266,23 +266,30 @@ def create_training_pod(
             "WANDB_API_KEY is missing. Set it in .env before launching RunPod runs."
         )
 
+    # Network volumes are DC-scoped; pods must launch in the same data center.
+    # Default EU-RO-1 matches the user's robolab-workspace volume (1hyuaan8i2).
+    data_center_id = (os.environ.get("RUNPOD_DATA_CENTER_ID") or "EU-RO-1").strip() or None
+
     preferred = cfg.gpu_type or DEFAULT_GPU_FALLBACKS[0]
     last_err: Exception | None = None
     for gpu_type_id in _gpu_candidates(preferred):
         try:
             hourly = query_hourly_rate(gpu_type_id, cloud_type=cloud_type)
-            raw = runpod.create_pod(
-                name=f"robolab-{run_id}",
-                image_name=env_bundle["ROBOLAB_WORKER_IMAGE"],
-                gpu_type_id=gpu_type_id,
-                cloud_type=cloud_type,
-                gpu_count=1,
-                volume_in_gb=0,
-                container_disk_in_gb=30,
-                volume_mount_path="/workspace",
-                network_volume_id=env_bundle["RUNPOD_NETWORK_VOLUME_ID"],
-                env=pod_env,
-            )
+            create_kwargs: dict[str, Any] = {
+                "name": f"robolab-{run_id}",
+                "image_name": env_bundle["ROBOLAB_WORKER_IMAGE"],
+                "gpu_type_id": gpu_type_id,
+                "cloud_type": cloud_type,
+                "gpu_count": 1,
+                "volume_in_gb": 0,
+                "container_disk_in_gb": 30,
+                "volume_mount_path": "/workspace",
+                "network_volume_id": env_bundle["RUNPOD_NETWORK_VOLUME_ID"],
+                "env": pod_env,
+            }
+            if data_center_id:
+                create_kwargs["data_center_id"] = data_center_id
+            raw = runpod.create_pod(**create_kwargs)
             pod_id = raw.get("id") if isinstance(raw, dict) else None
             if not pod_id:
                 raise RunPodConfigError(f"create_pod returned no id: {raw!r}")

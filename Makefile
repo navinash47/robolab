@@ -21,11 +21,13 @@ sync:
 #   make worker-image IMAGE=yourdockerhub/robolab-worker:phase3
 #   docker login && docker push yourdockerhub/robolab-worker:phase3
 # See docs/PHASE_3_SETUP.md for GHCR and full gate checklist.
-IMAGE ?= yourdockerhub/robolab-worker:phase3
+IMAGE ?= avinashnandyala2/robolab-worker:phase3
+# RunPod GPUs are amd64; force platform even on Apple Silicon / Colima aarch64.
+PLATFORM ?= linux/amd64
 worker-image:
 	@command -v docker >/dev/null || { echo "docker not found — install Docker Desktop or: brew install colima docker && colima start"; exit 1; }
-	docker build -f docker/worker.Dockerfile -t $(IMAGE) .
-	@echo "Built $(IMAGE)."
+	docker build --platform $(PLATFORM) -f docker/worker.Dockerfile -t $(IMAGE) .
+	@echo "Built $(IMAGE) ($(PLATFORM))."
 	@echo "Next: docker login && docker push $(IMAGE)"
 	@echo "Then set ROBOLAB_WORKER_IMAGE=$(IMAGE) in .env"
 
