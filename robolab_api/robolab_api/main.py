@@ -19,6 +19,34 @@ from robolab_api.watchdog import watchdog_loop
 logger = logging.getLogger("robolab.api")
 
 
+def _run_checkpoints(run: Run) -> list[dict]:
+    from pathlib import Path
+
+    from robolab.compute.local import repo_root
+
+    items: list[dict] = []
+    local = repo_root() / "checkpoints" / run.id / "policy.zip"
+    if local.is_file():
+        items.append(
+            {
+                "kind": "local",
+                "name": "policy.zip",
+                "path": str(local),
+                "exists": True,
+            }
+        )
+    if run.checkpoint_artifact:
+        items.append(
+            {
+                "kind": "wandb_artifact",
+                "name": run.checkpoint_artifact,
+                "path": None,
+                "exists": True,
+            }
+        )
+    return items
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     create_db_and_tables()
@@ -89,6 +117,8 @@ def list_experiments(session: SessionDep) -> dict:
                 "video_status": r.video_status,
                 "video_url": r.video_url,
                 "video_error": r.video_error,
+                "checkpoint_artifact": r.checkpoint_artifact,
+                "checkpoints": _run_checkpoints(r),
             }
             for r in rows
         ],

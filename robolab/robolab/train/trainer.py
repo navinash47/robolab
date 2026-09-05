@@ -155,12 +155,16 @@ def train(cfg: RunConfig, run_id: str, backend_url: str) -> dict:
         model.save(str(ckpt_path))
 
         artifact_name = f"policy-{run_id}"
+        artifact_ref = artifact_name
         if wandb_run is not None:
             art = wandb.Artifact(name=artifact_name, type="model")
             art.add_file(str(ckpt_path), name="policy.zip")
             logged = wandb_run.log_artifact(art)
             try:
                 logged.wait(timeout=120)
+                ver = getattr(logged, "version", None)
+                if ver:
+                    artifact_ref = f"{artifact_name}:{ver}"
             except Exception:
                 pass
 
@@ -169,8 +173,8 @@ def train(cfg: RunConfig, run_id: str, backend_url: str) -> dict:
             "wandb_url": wandb_url,
             "mean_return": mean_ret,
             "step": cfg.trainer.timesteps,
-            "checkpoint": str(ckpt_path),
-            "checkpoint_artifact": artifact_name,
+            "checkpoint": str(ckpt_path.resolve()),
+            "checkpoint_artifact": artifact_ref,
             "param_count": param_count,
         }
         _post_json(f"{backend}/api/runs/{run_id}/complete", result)

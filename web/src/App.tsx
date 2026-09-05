@@ -51,6 +51,13 @@ type RunRow = {
   video_status?: string | null;
   video_url?: string | null;
   video_error?: string | null;
+  checkpoint_artifact?: string | null;
+  checkpoints?: Array<{
+    kind: string;
+    name: string;
+    path?: string | null;
+    exists?: boolean;
+  }>;
 };
 
 type ExperimentsResponse = {
@@ -913,6 +920,32 @@ export default function App() {
                     Your browser does not support video.
                   </video>
                 )}
+                {(detailRun.checkpoints?.length || detailRun.checkpoint_artifact) && (
+                  <div className="mt-4" data-testid="checkpoints-list">
+                    <h4 className="mb-1 text-sm font-medium">Checkpoints</h4>
+                    <ul className="space-y-1 text-sm text-[var(--muted)]">
+                      {(detailRun.checkpoints ?? []).map((c) => (
+                        <li key={`${c.kind}-${c.name}`}>
+                          {c.kind === "wandb_artifact" ? (
+                            <>
+                              W&amp;B artifact: <code className="text-xs">{c.name}</code>
+                            </>
+                          ) : (
+                            <>
+                              Local: <code className="text-xs">{c.path ?? c.name}</code>
+                            </>
+                          )}
+                        </li>
+                      ))}
+                      {!detailRun.checkpoints?.length && detailRun.checkpoint_artifact ? (
+                        <li>
+                          W&amp;B artifact:{" "}
+                          <code className="text-xs">{detailRun.checkpoint_artifact}</code>
+                        </li>
+                      ) : null}
+                    </ul>
+                  </div>
+                )}
                 {detailRun.status === "COMPLETE" &&
                   detailRun.video_status !== "READY" &&
                   detailRun.video_status !== "RENDERING" && (
@@ -921,7 +954,7 @@ export default function App() {
                       data-testid="render-video-detail"
                       disabled={renderingId === detailRun.id}
                       onClick={() => void renderVideo(detailRun.id)}
-                      className="rounded bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+                      className="mt-4 rounded bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
                     >
                       Render video
                     </button>

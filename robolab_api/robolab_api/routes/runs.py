@@ -85,6 +85,32 @@ class ProgressEvent(BaseModel):
     video_error: str | None = None
 
 
+def _checkpoints_for(run: Run) -> list[dict[str, Any]]:
+    """Visible checkpoints for the run page: local zip and/or W&B artifact ref."""
+    items: list[dict[str, Any]] = []
+    local = repo_root() / "checkpoints" / run.id / "policy.zip"
+    if local.is_file():
+        items.append(
+            {
+                "kind": "local",
+                "name": "policy.zip",
+                "path": str(local),
+                "exists": True,
+            }
+        )
+    if run.checkpoint_artifact:
+        art = run.checkpoint_artifact
+        items.append(
+            {
+                "kind": "wandb_artifact",
+                "name": art,
+                "path": None,
+                "exists": True,
+            }
+        )
+    return items
+
+
 def _run_to_dict(run: Run) -> dict[str, Any]:
     total = run.total_steps or 1
     progress = min(1.0, float(run.step) / float(total)) if total else 0.0
@@ -115,6 +141,7 @@ def _run_to_dict(run: Run) -> dict[str, Any]:
         "video_url": run.video_url,
         "video_error": run.video_error,
         "checkpoint_artifact": run.checkpoint_artifact,
+        "checkpoints": _checkpoints_for(run),
         "created_at": run.created_at.isoformat() if run.created_at else None,
         "updated_at": run.updated_at.isoformat() if run.updated_at else None,
         "config": json.loads(run.config_json) if run.config_json else {},
@@ -296,9 +323,17 @@ def complete(run_id: str, body: CompleteBody, session: SessionDep) -> dict:
         run.param_count = body.param_count
     if body.checkpoint_artifact:
         run.checkpoint_artifact = body.checkpoint_artifact
+    elif body.checkpoint:
+        # Persist local path when trainer did not (or could not) name a W&B artifact.
+        run.checkpoint_artifact = body.checkpoint
     if body.step is not None:
         run.step = body.step
         run.total_steps = max(run.total_steps, body.step)
+    # Heal common Phase 1–3 gap: COMPLETE + on-disk zip but null DB field.
+    if not run.checkpoint_artifact:
+        local = repo_root() / "checkpoints" / run_id / "policy.zip"
+        if local.is_file():
+            run.checkpoint_artifact = f"policy-{run_id}"
     run.updated_at = datetime.now(timezone.utc)
     _settle_runpod_cost(session, run, reason="complete")
     session.add(run)
@@ -384,6 +419,9 @@ def video_complete(run_id: str, body: VideoCompleteBody, session: SessionDep) ->
     run.video_error = None
     if body.wandb_url and not run.wandb_url:
         run.wandb_url = body.wandb_url
+    if body.checkpoint and not run.checkpoint_artifact:
+        # Render used a local zip; record artifact name convention for the UI.
+        run.checkpoint_artifact = f"policy-{run_id}"
     run.updated_at = datetime.now(timezone.utc)
     session.add(run)
     session.commit()
