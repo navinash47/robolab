@@ -1,0 +1,21 @@
+# RoboLab phases and human gates
+
+Source: product plan Section 8 (kept current for Phase 0).
+
+Each phase: implement → write `docs/PHASE_<n>_APIS.md` (before code) and `docs/PHASE_<n>_TEST.md` (after) → commit → **stop**.
+
+| # | Build | My human gate (what I do, what I must see) |
+|---|---|---|
+| **0** | Repo scaffold, `uv` workspace, `make dev` starts backend + web, SQLite, dashboard skeleton with an empty experiments table and a budget header reading from `.env` | Run `make dev`, open `localhost:5173`, see the RoboLab page with "0 experiments" and "Budget: $X remaining". This is the ONLY phase allowed to show placeholder content. |
+| **1** | Core interfaces; MuJoCo adapter; `diffdrive_lidar` URDF; `wall_follow` task; `mlp` arch; SB3 trainer with custom policy; W&B logging; **local** runner; `POST /runs`; live progress via heartbeat + SSE | Click **New Run → local → mlp → wall_follow → 50k steps**. See a progress bar advance in real time, a live mean-return number, and a "W&B" link that opens a run with a return curve. Run status flips to `COMPLETE`. |
+| **2** | Architecture registry with `kan`; arch dropdown; "Compare" view pulling W&B history via API and overlaying curves | Launch a `kan` run the same way. Open **Compare**, pick both runs, see two curves on one chart and a table with param counts. |
+| **3** | RunPod runner, worker Docker image, network volume, entrypoint self-termination, backend watchdog, cost ledger | Click **New Run → runpod**. Dashboard shows `PROVISIONING → RUNNING (pod id, $/hr, accrued $)`. RunPod console shows the pod. Run completes; pod **disappears from the RunPod console by itself**; dashboard shows final cost. Then: launch a run with `budget_usd: 0.05`, watch the watchdog kill it and label it. |
+| **4** | Playback + video: load checkpoint from W&B artifact, roll out headless (`MUJOCO_GL=egl` on pod, `osmesa` locally), record MP4 via Gymnasium `RecordVideo` (fresh env per recording), upload as `wandb.Video`, serve in dashboard | On a completed run click **Render video**. Within a couple of minutes a video player appears on the run page and I watch the robot follow the wall. Works for both local and RunPod runs. |
+| **5** | PyBullet adapter loading the *same* URDF; `wall_follow` runs unchanged in both sims; sim dropdown | Launch `wall_follow` in PyBullet. Render its video. Two videos, same robot, two engines. Obs/action spaces reported identical in the run page. |
+| **6** | Sim-to-sim pipeline: `transfer_to: [pybullet]` → after training, zero-shot eval in target; `transfer/` metrics; Transfer report page with transfer ratio, gap, and perturbation robustness curves | Launch mlp with `transfer_to: [pybullet]`. Open **Transfer** tab: see source vs target return with CIs, transfer ratio, and the friction/mass/noise robustness plot. Repeat for kan. |
+| **7** | Full evaluation module (7.1–7.5), seeds fan-out (one RunConfig → N seed runs, aggregated), `rliable` stats, paper export | On a 5-seed mlp-vs-kan group click **Export paper figures**. Download a zip with PDF/PNG figures, a `.tex` table, and `results.json`. Open the PDFs; they look like paper figures. Sharpness and jerk numbers are in the table. |
+| **8** | Parallel orchestration: launch a config matrix (sims × archs × seeds) as N pods with a group id; group progress view; cancel-group | Launch `{mujoco,pybullet} × {mlp,kan} × 2 seeds` = 8 pods. See 8 progress bars under one group card, per-pod cost, total group cost. Hit **Cancel group**; all pods die within a minute. |
+| **9** | Task-spec generator: text box → Haiku → structured spec (TaskSpec skeleton, obs/action/reward description, suggested evaluators, suggested perturbations, a ready-to-paste Cursor prompt to implement `robolab/tasks/<name>.py`) with a copy button; saved to `experiments/specs/` | Type "quadruped standing balance on a tilting platform". Get a full spec + Cursor prompt in under 20s, copy it, and it references the actual `TaskSpec` interface in this repo. |
+| **10** | Genesis adapter (GPU); then Isaac Lab adapter behind a capability flag; same URDF, same task | `wall_follow` video from Genesis. Transfer report MuJoCo → Genesis. |
+
+Later (not now): Gazebo/ROS 2 adapter, real-robot deployment hooks, hyperparameter sweeps via W&B Sweeps, Render/Railway deployment of the dashboard.
