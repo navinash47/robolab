@@ -12,6 +12,7 @@ dependencies = [
     "pydantic>=2.7.0",
     "pyyaml>=6.0",
     "numpy>=1.26.0",
+    "efficient-kan",
 ]
 
 [project.scripts]
@@ -26,3 +27,6 @@ packages = ["robolab"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "robolab/robots" = "robolab/robots"
+
+[tool.uv.sources]
+efficient-kan = { git = "https://github.com/Blealtan/efficient-kan.git" }

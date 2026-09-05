@@ -28,6 +28,7 @@ class HeartbeatBody(BaseModel):
     eta: float | None = None
     wandb_url: str | None = None
     status: str | None = None
+    param_count: int | None = None
 
 
 class CompleteBody(BaseModel):
@@ -36,6 +37,7 @@ class CompleteBody(BaseModel):
     mean_return: float | None = None
     step: int | None = None
     checkpoint: str | None = None
+    param_count: int | None = None
 
 
 class FailBody(BaseModel):
@@ -69,6 +71,7 @@ def _run_to_dict(run: Run) -> dict[str, Any]:
         "step": run.step,
         "total_steps": run.total_steps,
         "mean_return": run.mean_return,
+        "param_count": run.param_count,
         "wandb_url": run.wandb_url,
         "error": run.error,
         "progress": progress,
@@ -150,6 +153,8 @@ def heartbeat(run_id: str, body: HeartbeatBody, session: SessionDep) -> dict:
         run.mean_return = body.mean_return
     if body.wandb_url:
         run.wandb_url = body.wandb_url
+    if body.param_count is not None:
+        run.param_count = body.param_count
     if body.status:
         run.status = body.status
     elif run.status == RunStatus.QUEUED.value:
@@ -170,6 +175,8 @@ def complete(run_id: str, body: CompleteBody, session: SessionDep) -> dict:
         run.wandb_url = body.wandb_url
     if body.mean_return is not None:
         run.mean_return = body.mean_return
+    if body.param_count is not None:
+        run.param_count = body.param_count
     if body.step is not None:
         run.step = body.step
         run.total_steps = max(run.total_steps, body.step)

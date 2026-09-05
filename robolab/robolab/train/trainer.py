@@ -78,7 +78,7 @@ def train(cfg: RunConfig, run_id: str, backend_url: str) -> dict:
                 "name": run_name,
                 "config": cfg.model_dump(),
                 "job_type": "train",
-                "tags": ["phase1", cfg.arch, cfg.task, cfg.sim, cfg.compute],
+                "tags": ["phase2" if cfg.arch == "kan" else "phase1", cfg.arch, cfg.task, cfg.sim, cfg.compute],
                 "settings": wandb.Settings(init_timeout=120),
             }
             if entity:
@@ -127,12 +127,18 @@ def train(cfg: RunConfig, run_id: str, backend_url: str) -> dict:
             policy_kwargs=policy_kwargs,
         )
 
+        param_count = int(model.policy.mlp_extractor.arch.param_count())
+        if wandb_run is not None:
+            wandb_run.config.update({"param_count": param_count, "arch": cfg.arch}, allow_val_change=True)
+            wandb_run.summary["param_count"] = param_count
+
         cb = WandbAndHeartbeatCallback(
             run_id=run_id,
             total_timesteps=cfg.trainer.timesteps,
             backend_url=backend,
             wandb_run=wandb_run,
             heartbeat_every_steps=max(256, cfg.trainer.n_steps // 4),
+            param_count=param_count,
         )
 
         model.learn(total_timesteps=cfg.trainer.timesteps, callback=CallbackList([cb]))
@@ -154,6 +160,7 @@ def train(cfg: RunConfig, run_id: str, backend_url: str) -> dict:
             "mean_return": mean_ret,
             "step": cfg.trainer.timesteps,
             "checkpoint": str(ckpt_path),
+            "param_count": param_count,
         }
         _post_json(f"{backend}/api/runs/{run_id}/complete", result)
         return result

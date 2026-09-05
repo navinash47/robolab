@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Annotated, Optional
 
 from fastapi import Depends
+from sqlalchemy import text
 from sqlmodel import Field, Session, SQLModel, create_engine
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -36,6 +37,7 @@ class Run(SQLModel, table=True):
     step: int = 0
     total_steps: int = 0
     mean_return: Optional[float] = None
+    param_count: Optional[int] = None
     wandb_url: Optional[str] = None
     error: Optional[str] = None
     pid: Optional[int] = None
@@ -43,8 +45,19 @@ class Run(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+def _migrate_columns() -> None:
+    """SQLite create_all does not ADD columns — patch Run.param_count if missing."""
+    with engine.connect() as conn:
+        rows = conn.execute(text("PRAGMA table_info(run)")).fetchall()
+        cols = {r[1] for r in rows}
+        if rows and "param_count" not in cols:
+            conn.execute(text("ALTER TABLE run ADD COLUMN param_count INTEGER"))
+            conn.commit()
+
+
 def create_db_and_tables() -> None:
     SQLModel.metadata.create_all(engine)
+    _migrate_columns()
 
 
 def get_session():

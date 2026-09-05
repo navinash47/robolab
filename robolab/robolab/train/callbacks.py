@@ -36,6 +36,7 @@ class WandbAndHeartbeatCallback(BaseCallback):
         backend_url: str,
         wandb_run: Any | None = None,
         heartbeat_every_steps: int = 512,
+        param_count: int | None = None,
         verbose: int = 0,
     ):
         super().__init__(verbose)
@@ -44,6 +45,7 @@ class WandbAndHeartbeatCallback(BaseCallback):
         self.backend_url = backend_url.rstrip("/")
         self.wandb_run = wandb_run
         self.heartbeat_every_steps = max(1, heartbeat_every_steps)
+        self.param_count = param_count
         self._last_hb_t = 0.0
         self._last_mean: float | None = None
         self._wandb_url: str | None = getattr(wandb_run, "url", None) if wandb_run else None
@@ -79,6 +81,7 @@ class WandbAndHeartbeatCallback(BaseCallback):
             "eta": eta,
             "wandb_url": self._wandb_url,
             "status": "RUNNING",
+            "param_count": self.param_count,
         }
         _post_json(f"{self.backend_url}/api/runs/{self.run_id}/heartbeat", payload)
         self._last_hb_t = now
