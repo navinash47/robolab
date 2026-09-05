@@ -1,7 +1,5 @@
 # RoboLab phases and human gates
 
-Source: product plan Section 8 (kept current for Phase 0).
-
 Each phase: implement → write `docs/PHASE_<n>_APIS.md` (before code) and `docs/PHASE_<n>_TEST.md` (after) → commit → **stop**.
 
 | # | Build | My human gate (what I do, what I must see) |

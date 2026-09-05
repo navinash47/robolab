@@ -1,21 +1,10 @@
-# Phase 0 APIs (documented before code)
+# Phase 0 APIs (researched before code)
 
-Exact tools and signatures RoboLab Phase 0 will use. Links are to current official docs. No Phase 1+ training/sim APIs here.
+Exact APIs and signatures planned for Phase 0. Doc wins over this prompt if they diverge.
 
-## Ports
+## uv workspace
 
-| Service | Port | How started |
-|---------|------|-------------|
-| FastAPI (`robolab_api`) | `8000` | `uv run --package robolab-api uvicorn …` |
-| Vite web dashboard | `5173` | `npm run dev` in `web/` |
-
-`make dev` starts both concurrently.
-
----
-
-## 1. uv workspace
-
-Docs: [Using workspaces](https://docs.astral.sh/uv/concepts/projects/workspaces/)
+**Docs:** [Using workspaces](https://docs.astral.sh/uv/concepts/projects/workspaces/), [Working on projects](https://docs.astral.sh/uv/guides/projects/), [Managing dependencies](https://docs.astral.sh/uv/concepts/projects/dependencies/)
 
 Root `pyproject.toml`:
 
@@ -26,61 +15,36 @@ version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = []
 
-[tool.uv]
-package = false
-
 [tool.uv.workspace]
 members = ["robolab", "robolab_eval", "robolab_api"]
-```
-
-Workspace member dependency (example: API depends on core):
-
-```toml
-[project]
-dependencies = ["robolab", "fastapi", "uvicorn[standard]", "sqlmodel"]
 
 [tool.uv.sources]
 robolab = { workspace = true }
+robolab-eval = { workspace = true }
+robolab-api = { workspace = true }
 ```
+
+Member packages use their own `pyproject.toml` with `[build-system]` (hatchling or uv_build). Workspace member deps via `{ workspace = true }` are editable.
 
 Commands:
 
 | Command | Purpose |
-|---------|---------|
-| `uv sync` | Install workspace root env + lockfile |
-| `uv lock` | Resolve entire workspace |
-| `uv run --package robolab-api <cmd>` | Run command in member context |
+|---|---|
+| `uv sync --all-packages` | Install all workspace members into `.venv` |
+| `uv lock` | Resolve entire workspace lockfile |
+| `uv run --package robolab-api …` | Run a command with that member’s env |
+| `uv run --env-file .env …` | Load `.env` into the process env ([CLI](https://docs.astral.sh/uv/reference/cli/)) |
 
-Package names (PEP 621 `name`):
+## FastAPI
 
-| Directory | `project.name` | Import path |
-|-----------|----------------|-------------|
-| `robolab/` | `robolab` | `robolab` |
-| `robolab_eval/` | `robolab-eval` | `robolab_eval` |
-| `robolab_api/` | `robolab-api` | `robolab_api` |
-
-Build backend for library members: Hatchling (`[build-system] requires = ["hatchling"]`, `build-backend = "hatchling.build"`).
-
----
-
-## 2. FastAPI application
-
-Docs: [First Steps](https://fastapi.tiangolo.com/tutorial/first-steps/), [SQL Databases](https://fastapi.tiangolo.com/tutorial/sql-databases/), [CORS](https://fastapi.tiangolo.com/tutorial/cors/)
+**Docs:** [First steps](https://fastapi.tiangolo.com/tutorial/first-steps/), [CORS](https://fastapi.tiangolo.com/tutorial/cors/), [Dependencies](https://fastapi.tiangolo.com/tutorial/dependencies/)
 
 ```python
-from contextlib import asynccontextmanager
 from typing import Annotated
-
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlmodel import Session, select
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    create_db_and_tables()
-    yield
-
-app = FastAPI(title="RoboLab API", lifespan=lifespan)
+app = FastAPI(title="RoboLab API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -89,133 +53,109 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok"}
 ```
 
-`CORSMiddleware` kwargs (from FastAPI CORS docs): `allow_origins`, `allow_origin_regex`, `allow_methods`, `allow_headers`, `allow_credentials`, `expose_headers`, `max_age`.
+Path ops for Phase 0:
 
-Phase 0 HTTP routes:
+- `GET /api/experiments` → list (empty)
+- `GET /api/budget` → budget remaining from env
 
-| Method | Path | Response |
-|--------|------|----------|
-| `GET` | `/health` | `{"status": "ok"}` |
-| `GET` | `/api/experiments` | `{"experiments": [], "count": 0}` |
-| `GET` | `/api/budget` | see Budget below |
+## SQLModel + SQLite
 
----
-
-## 3. SQLModel + SQLite
-
-Docs: [Create DB and tables](https://sqlmodel.tiangolo.com/tutorial/create-db-and-table/), [Session with FastAPI dependency](https://sqlmodel.tiangolo.com/tutorial/fastapi/session-with-dependency/), [FastAPI SQL databases](https://fastapi.tiangolo.com/tutorial/sql-databases/)
+**Docs:** [Create a table / engine](https://sqlmodel.tiangolo.com/tutorial/create-db-and-table/), [Session with dependency](https://sqlmodel.tiangolo.com/tutorial/fastapi/session-with-dependency/), [Read data](https://sqlmodel.tiangolo.com/tutorial/fastapi/read/)
 
 ```python
+from collections.abc import Generator
+from typing import Annotated
+
+from fastapi import Depends
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 
 class Experiment(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     name: str
+    status: str = "pending"
 
 sqlite_url = "sqlite:///./robolab.db"
-connect_args = {"check_same_thread": False}
-engine = create_engine(sqlite_url, connect_args=connect_args)
+engine = create_engine(sqlite_url, connect_args={"check_same_thread": False})
 
 def create_db_and_tables() -> None:
     SQLModel.metadata.create_all(engine)
 
-def get_session():
+def get_session() -> Generator[Session, None, None]:
     with Session(engine) as session:
         yield session
 
 SessionDep = Annotated[Session, Depends(get_session)]
+
+@app.on_event("startup")  # or lifespan context — see FastAPI lifespan docs
+def on_startup() -> None:
+    create_db_and_tables()
+
+@app.get("/api/experiments")
+def list_experiments(session: SessionDep) -> list[Experiment]:
+    return list(session.exec(select(Experiment)).all())
 ```
 
-Signatures used:
+Notes from docs:
 
-| API | Signature / usage |
-|-----|-------------------|
-| `Field` | `Field(default=None, primary_key=True)` |
-| `create_engine` | `create_engine(url: str, *, connect_args: dict = ..., echo: bool = False)` |
-| `SQLModel.metadata.create_all` | `create_all(bind: Engine)` |
-| `Session` | `with Session(engine) as session:` |
-| `select` | `session.exec(select(Experiment)).all()` |
+- `table=True` marks a table model.
+- `Field(default=None, primary_key=True)` for autoincrement id.
+- SQLite + FastAPI needs `connect_args={"check_same_thread": False}`.
+- Prefer FastAPI lifespan over deprecated `@app.on_event` if using current FastAPI; both work for Phase 0.
 
-Phase 0: tables exist; list endpoint returns empty until Phase 1 creates rows. No seeded mock rows.
+## Budget from env
 
----
+**Docs:** [uv `--env-file`](https://docs.astral.sh/uv/reference/cli/), Python [`os.getenv`](https://docs.python.org/3/library/os.html#os.getenv)
 
-## 4. Uvicorn
-
-Docs: [Settings](https://uvicorn.dev/settings/)
-
-CLI:
-
-```bash
-uv run --package robolab-api uvicorn robolab_api.main:app --host 127.0.0.1 --port 8000 --reload --env-file .env
-```
-
-| Flag | Meaning |
-|------|---------|
-| `--host` | Bind host (default `127.0.0.1`) |
-| `--port` | Bind port (default `8000`) |
-| `--reload` | Dev auto-reload |
-| `--env-file` | Load `.env` before app start (Uvicorn ≥ 0.21) |
-
-Programmatic equivalent: `uvicorn.run("robolab_api.main:app", host="127.0.0.1", port=8000, reload=True)`.
-
----
-
-## 5. Budget from `.env`
-
-Phase 0 formula (month spend = `0`):
-
-```text
-remaining_usd = BUDGET_USD_CAP - month_spend_usd
-```
-
-Read via `os.environ` after Uvicorn `--env-file .env` (or `python-dotenv` `load_dotenv()` if needed).
+No extra dotenv package. `make dev` runs the API via `uv run --env-file .env` (falls back if `.env` missing; use `.env.example` values by copying).
 
 ```python
 import os
 
-def get_budget() -> dict:
-    cap = float(os.environ.get("BUDGET_USD_CAP", "100"))
-    month_spend = 0.0  # Phase 0: no cost ledger yet
+def get_budget() -> dict[str, float]:
+    cap = float(os.getenv("BUDGET_USD_CAP", "50"))
+    spent = 0.0  # Phase 0: no cost ledger yet
     return {
-        "budget_usd_cap": cap,
-        "month_spend_usd": month_spend,
-        "remaining_usd": cap - month_spend,
+        "cap_usd": cap,
+        "spent_usd": spent,
+        "remaining_usd": cap - spent,
     }
 ```
 
-`.env.example` keys (no secrets committed):
+## uvicorn
+
+**Docs:** [Uvicorn deployment / CLI](https://www.uvicorn.org/)
 
 ```bash
-RUNPOD_API_KEY=
-WANDB_API_KEY=
-ANTHROPIC_API_KEY=
-BUDGET_USD_CAP=100
+uv run --package robolab-api uvicorn robolab_api.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
----
+Signature: `uvicorn <module>:<app> --reload --host HOST --port PORT`
 
-## 6. Vite + React + TypeScript
+## React + Vite + TypeScript
 
-Docs: [Vite Getting Started](https://vite.dev/guide/), [Create Vite](https://vite.dev/guide/#scaffolding-your-first-vite-project)
-
-Scaffold:
+**Docs:** [Vite Getting Started](https://vite.dev/guide/), [create-vite templates](https://vite.dev/guide/#scaffolding-your-first-vite-project)
 
 ```bash
 npm create vite@latest web -- --template react-ts
 ```
 
-`vite.config.ts` (proxy API to backend):
+Default dev server: `http://localhost:5173` (`npm run dev` → `vite`).
+
+Proxy API (optional; CORS also configured on backend):
 
 ```ts
+// vite.config.ts
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-import tailwindcss from "@tailwindcss/vite";
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react()],
   server: {
     port: 5173,
     proxy: {
@@ -225,25 +165,16 @@ export default defineConfig({
 });
 ```
 
-Vite `defineConfig` / `server.port` / `server.proxy`: [Server Options](https://vite.dev/config/server-options.html).
-
-Frontend fetches:
+Fetch:
 
 ```ts
-const res = await fetch("/api/budget");
-const data = await res.json();
-// data.remaining_usd → header "Budget: $X remaining"
-
-const exp = await fetch("/api/experiments");
-const { count } = await exp.json();
-// count === 0 → "0 experiments"
+const res = await fetch("/api/experiments");
+const experiments: Experiment[] = await res.json();
 ```
 
----
+## Tailwind CSS v4 (Vite plugin)
 
-## 7. Tailwind CSS v4 (Vite plugin)
-
-Docs: [Installing Tailwind CSS with Vite](https://tailwindcss.com/docs/installation/using-vite)
+**Docs:** [Installing Tailwind CSS with Vite](https://tailwindcss.com/docs/installation/using-vite)
 
 ```bash
 npm install tailwindcss @tailwindcss/vite
@@ -254,32 +185,44 @@ import tailwindcss from "@tailwindcss/vite";
 // plugins: [react(), tailwindcss()]
 ```
 
-CSS entry:
-
 ```css
 @import "tailwindcss";
 ```
 
-Recharts is allowed by the Phase 0 stack but **not required** for an empty experiments table; deferred until a chart is needed.
+## Recharts
 
----
+**Docs:** [Recharts](https://recharts.org/en-US/)
 
-## 8. `make dev` concurrency
+Not required for Phase 0 empty table. Skip until Phase 1+ charts.
 
-Makefile uses a simple shell background pattern (no extra npm dep required):
+## make / concurrent processes
+
+No extra process manager dep. Makefile:
 
 ```makefile
 dev:
-	uv sync
-	cd web && npm install
-	uv run --package robolab-api uvicorn robolab_api.main:app --host 127.0.0.1 --port 8000 --reload --env-file .env & \
+	@trap 'kill 0' EXIT; \
+	uv run --env-file .env --package robolab-api \
+	  uvicorn robolab_api.main:app --reload --host 127.0.0.1 --port 8000 & \
 	cd web && npm run dev
 ```
 
-Alternatively `npx concurrently` if we add it later (ask before adding). Phase 0 prefers Makefile-only concurrency.
+## Ports (Phase 0)
 
----
+| Service | Port |
+|---|---|
+| Vite dashboard | `5173` |
+| FastAPI | `8000` |
 
-## 9. Explicitly out of scope for Phase 0
+## Sources
 
-MuJoCo, SB3, RunPod, W&B training, SSE, `POST /runs`, Recharts charts, seed data in experiments table.
+- [uv workspaces](https://docs.astral.sh/uv/concepts/projects/workspaces/)
+- [uv projects guide](https://docs.astral.sh/uv/guides/projects/)
+- [uv dependencies / workspace sources](https://docs.astral.sh/uv/concepts/projects/dependencies/)
+- [FastAPI first steps](https://fastapi.tiangolo.com/tutorial/first-steps/)
+- [FastAPI CORS](https://fastapi.tiangolo.com/tutorial/cors/)
+- [FastAPI dependencies](https://fastapi.tiangolo.com/tutorial/dependencies/)
+- [SQLModel create table](https://sqlmodel.tiangolo.com/tutorial/create-db-and-table/)
+- [SQLModel FastAPI session dependency](https://sqlmodel.tiangolo.com/tutorial/fastapi/session-with-dependency/)
+- [Vite guide](https://vite.dev/guide/)
+- [Tailwind + Vite](https://tailwindcss.com/docs/installation/using-vite)
