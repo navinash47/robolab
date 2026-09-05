@@ -200,7 +200,7 @@ def fetch_history(wandb_url: str) -> list[dict]:
     entity, project, rid = parse_wandb_path(wandb_url)
     api = wandb.Api()
     wrun = api.run(f"{entity}/{project}/{rid}")
-    df = wrun.history(samples=500, keys=["rollout/ep_rew_mean"], pandas=True)
+    rows = wrun.history(samples=500, keys=["rollout/ep_rew_mean"], pandas=False)
     ...
 ```
 
