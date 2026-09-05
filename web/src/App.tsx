@@ -9,6 +9,15 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import {
+  EMPTY_FILTERS,
+  SORT_OPTIONS,
+  filtersActive,
+  queryExperiments,
+  uniqueValues,
+  type ExperimentFilters,
+  type SortKey,
+} from "./experimentsQuery";
 
 type Budget = {
   budget_usd_cap: number;
@@ -58,6 +67,8 @@ type RunRow = {
     path?: string | null;
     exists?: boolean;
   }>;
+  created_at?: string | null;
+  group?: string | null;
 };
 
 type ExperimentsResponse = {
@@ -153,6 +164,11 @@ export default function App() {
   const [comparing, setComparing] = useState(false);
   const [renderingId, setRenderingId] = useState<string | null>(null);
   const [detailId, setDetailId] = useState<string | null>(null);
+  const [searchInput, setSearchInput] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [filters, setFilters] = useState<ExperimentFilters>(EMPTY_FILTERS);
+  const [sortKey, setSortKey] = useState<SortKey>("created_desc");
   const [form, setForm] = useState({
     compute: "local",
     arch: "mlp",
@@ -174,6 +190,11 @@ export default function App() {
     if (!detailId) return;
     detailRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }, [detailId]);
+
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebouncedSearch(searchInput), 220);
+    return () => window.clearTimeout(t);
+  }, [searchInput]);
 
   const refresh = useCallback(async () => {
     try {
@@ -417,6 +438,25 @@ export default function App() {
     [compareData],
   );
 
+  const displayedRuns = useMemo(
+    () => queryExperiments(runs, debouncedSearch, filters, sortKey),
+    [runs, debouncedSearch, filters, sortKey],
+  );
+
+  const filterOptions = useMemo(
+    () => ({
+      sim: uniqueValues(runs, "sim"),
+      arch: uniqueValues(runs, "arch"),
+      status: uniqueValues(runs, "status"),
+      compute: uniqueValues(runs, "compute"),
+      group: uniqueValues(runs, "group"),
+    }),
+    [runs],
+  );
+
+  const hasActiveFilters = filtersActive(filters);
+  const hasQueryOrFilters = Boolean(debouncedSearch.trim()) || hasActiveFilters;
+
   const remainingLabel =
     budget === null
       ? "Budget: …"
@@ -442,7 +482,11 @@ export default function App() {
 
   const wandbOk = wandb?.status === "ok";
   const experimentsLabel =
-    count === null ? "…" : `${count} experiment${count === 1 ? "" : "s"}`;
+    count === null
+      ? "…"
+      : hasQueryOrFilters
+        ? `${displayedRuns.length} of ${count} experiment${count === 1 ? "" : "s"}`
+        : `${count} experiment${count === 1 ? "" : "s"}`;
 
   const selectable = runs.filter((r) => r.wandb_url);
   const detailRun = detailId ? runs.find((r) => r.id === detailId) ?? null : null;
@@ -698,6 +742,175 @@ export default function App() {
               </button>
             </div>
 
+            <div
+              className="mb-3 flex flex-wrap items-end gap-3"
+              data-testid="experiments-toolbar"
+            >
+              <label className="min-w-[14rem] flex-1 text-sm">
+                <span className="mb-1 block text-[var(--muted)]">Search</span>
+                <input
+                  type="search"
+                  value={searchInput}
+                  onChange={(e) => setSearchInput(e.target.value)}
+                  placeholder="Name, id, sim, arch…"
+                  className="w-full rounded border border-[var(--border)] bg-white px-3 py-2"
+                  data-testid="experiments-search"
+                  autoComplete="off"
+                />
+              </label>
+              <button
+                type="button"
+                data-testid="experiments-filters-toggle"
+                onClick={() => setFiltersOpen((o) => !o)}
+                className={`rounded border px-3 py-2 text-sm font-medium ${
+                  hasActiveFilters
+                    ? "border-[var(--accent)] bg-[#e8f4ef] text-[var(--accent)]"
+                    : "border-[var(--border)] bg-[var(--surface)]"
+                }`}
+              >
+                Filters{hasActiveFilters ? " · on" : ""}
+              </button>
+              <label className="text-sm">
+                <span className="mb-1 block text-[var(--muted)]">Sort</span>
+                <select
+                  className="rounded border border-[var(--border)] bg-white px-3 py-2"
+                  value={sortKey}
+                  onChange={(e) => setSortKey(e.target.value as SortKey)}
+                  data-testid="experiments-sort"
+                >
+                  {SORT_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {hasQueryOrFilters ? (
+                <button
+                  type="button"
+                  data-testid="experiments-clear"
+                  className="rounded border border-[var(--border)] px-3 py-2 text-sm text-[var(--muted)]"
+                  onClick={() => {
+                    setSearchInput("");
+                    setDebouncedSearch("");
+                    setFilters(EMPTY_FILTERS);
+                  }}
+                >
+                  Clear
+                </button>
+              ) : null}
+            </div>
+
+            {filtersOpen && (
+              <div
+                className="mb-4 grid gap-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4 sm:grid-cols-2 lg:grid-cols-3"
+                data-testid="experiments-filters"
+              >
+                <label className="text-sm">
+                  <span className="mb-1 block text-[var(--muted)]">Sim</span>
+                  <select
+                    className="w-full rounded border border-[var(--border)] bg-white px-3 py-2"
+                    value={filters.sim}
+                    onChange={(e) => setFilters({ ...filters, sim: e.target.value })}
+                    data-testid="filter-sim"
+                  >
+                    <option value="">Any</option>
+                    {filterOptions.sim.map((v) => (
+                      <option key={v} value={v}>
+                        {v}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="text-sm">
+                  <span className="mb-1 block text-[var(--muted)]">Arch</span>
+                  <select
+                    className="w-full rounded border border-[var(--border)] bg-white px-3 py-2"
+                    value={filters.arch}
+                    onChange={(e) => setFilters({ ...filters, arch: e.target.value })}
+                    data-testid="filter-arch"
+                  >
+                    <option value="">Any</option>
+                    {filterOptions.arch.map((v) => (
+                      <option key={v} value={v}>
+                        {v}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="text-sm">
+                  <span className="mb-1 block text-[var(--muted)]">Status</span>
+                  <select
+                    className="w-full rounded border border-[var(--border)] bg-white px-3 py-2"
+                    value={filters.status}
+                    onChange={(e) => setFilters({ ...filters, status: e.target.value })}
+                    data-testid="filter-status"
+                  >
+                    <option value="">Any</option>
+                    {filterOptions.status.map((v) => (
+                      <option key={v} value={v}>
+                        {v}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="text-sm">
+                  <span className="mb-1 block text-[var(--muted)]">Compute</span>
+                  <select
+                    className="w-full rounded border border-[var(--border)] bg-white px-3 py-2"
+                    value={filters.compute}
+                    onChange={(e) => setFilters({ ...filters, compute: e.target.value })}
+                    data-testid="filter-compute"
+                  >
+                    <option value="">Any</option>
+                    {filterOptions.compute.map((v) => (
+                      <option key={v} value={v}>
+                        {v}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {filterOptions.group.length > 0 ? (
+                  <label className="text-sm">
+                    <span className="mb-1 block text-[var(--muted)]">Group</span>
+                    <select
+                      className="w-full rounded border border-[var(--border)] bg-white px-3 py-2"
+                      value={filters.group}
+                      onChange={(e) => setFilters({ ...filters, group: e.target.value })}
+                      data-testid="filter-group"
+                    >
+                      <option value="">Any</option>
+                      {filterOptions.group.map((v) => (
+                        <option key={v} value={v}>
+                          {v}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
+                <label className="text-sm">
+                  <span className="mb-1 block text-[var(--muted)]">From</span>
+                  <input
+                    type="date"
+                    className="w-full rounded border border-[var(--border)] bg-white px-3 py-2"
+                    value={filters.dateFrom}
+                    onChange={(e) => setFilters({ ...filters, dateFrom: e.target.value })}
+                    data-testid="filter-date-from"
+                  />
+                </label>
+                <label className="text-sm">
+                  <span className="mb-1 block text-[var(--muted)]">To</span>
+                  <input
+                    type="date"
+                    className="w-full rounded border border-[var(--border)] bg-white px-3 py-2"
+                    value={filters.dateTo}
+                    onChange={(e) => setFilters({ ...filters, dateTo: e.target.value })}
+                    data-testid="filter-date-to"
+                  />
+                </label>
+              </div>
+            )}
+
             <div className="overflow-x-auto rounded-lg border border-[var(--border)] bg-[var(--surface)]">
               <table className="w-full min-w-[960px] text-left text-sm">
                 <thead className="border-b border-[var(--border)] bg-[#f0f4f7] text-[var(--muted)]">
@@ -734,8 +947,18 @@ export default function App() {
                         Loading…
                       </td>
                     </tr>
+                  ) : displayedRuns.length === 0 ? (
+                    <tr>
+                      <td
+                        colSpan={10}
+                        className="px-4 py-16 text-center text-[var(--muted)]"
+                        data-testid="empty-search"
+                      >
+                        No experiments match your search or filters.
+                      </td>
+                    </tr>
                   ) : (
-                    runs.map((r) => (
+                    displayedRuns.map((r) => (
                       <tr
                         key={r.id}
                         className="border-b border-[var(--border)] last:border-0"

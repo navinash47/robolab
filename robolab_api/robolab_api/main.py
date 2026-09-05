@@ -120,6 +120,7 @@ def list_experiments(session: SessionDep) -> dict:
                 "video_error": r.video_error,
                 "checkpoint_artifact": r.checkpoint_artifact,
                 "checkpoints": _run_checkpoints(r),
+                "created_at": r.created_at.isoformat() if r.created_at else None,
             }
             for r in rows
         ],
