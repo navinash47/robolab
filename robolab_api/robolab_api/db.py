@@ -51,6 +51,10 @@ class Run(SQLModel, table=True):
     video_url: Optional[str] = None
     video_error: Optional[str] = None
     checkpoint_artifact: Optional[str] = None
+    obs_dim: Optional[int] = None
+    act_dim: Optional[int] = None
+    control_hz: Optional[float] = None
+    physics_substeps: Optional[int] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -91,6 +95,10 @@ _RUN_EXTRA_COLS: dict[str, str] = {
     "video_url": "TEXT",
     "video_error": "TEXT",
     "checkpoint_artifact": "TEXT",
+    "obs_dim": "INTEGER",
+    "act_dim": "INTEGER",
+    "control_hz": "REAL",
+    "physics_substeps": "INTEGER",
 }
 
 

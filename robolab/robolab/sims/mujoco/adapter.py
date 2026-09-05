@@ -13,22 +13,10 @@ from gymnasium import spaces
 from robolab.core.run import DomainParams
 from robolab.core.sim import SimAdapter, register_sim
 from robolab.core.task import TaskSpec
+from robolab.robots.paths import ROBOTS_ROOT, robot_dir, scene_path, urdf_path
 
-ROBOTS_ROOT = Path(__file__).resolve().parents[2] / "robots"
 LIDAR_ANGLES_DEG = (0.0, 45.0, -45.0, 90.0, -90.0)
 LIDAR_MAX = 5.0
-
-
-def robot_dir(robot: str) -> Path:
-    return ROBOTS_ROOT / robot
-
-
-def scene_path(robot: str) -> Path:
-    return robot_dir(robot) / "scene.xml"
-
-
-def urdf_path(robot: str) -> Path:
-    return robot_dir(robot) / "robot.urdf"
 
 
 class DiffDriveLidarEnv(gym.Env):
@@ -89,9 +77,11 @@ class DiffDriveLidarEnv(gym.Env):
                 self.model.geom_friction[gid, 0] = self.domain.friction * (
                     1.5 if "wheel" in name else 1.0
                 )
-        # Control / physics timing
-        ctrl_dt = 1.0 / self.domain.control_hz
+        # Control / physics timing (sim-to-sim honesty with PyBullet).
+        ctrl_dt = 1.0 / max(1e-6, self.domain.control_hz)
         self.model.opt.timestep = ctrl_dt / max(1, self.domain.physics_substeps)
+        self._control_dt = ctrl_dt
+        self._physics_dt = float(self.model.opt.timestep)
 
     def reset(self, *, seed: int | None = None, options: dict | None = None):
         super().reset(seed=seed)
@@ -153,6 +143,10 @@ class DiffDriveLidarEnv(gym.Env):
             "position": self.data.xpos[self._base_body].copy(),
             "forward_speed": v,
             "steps": self._steps,
+            "control_hz": self.domain.control_hz,
+            "physics_substeps": self.domain.physics_substeps,
+            "control_dt": getattr(self, "_control_dt", 1.0 / self.domain.control_hz),
+            "physics_dt": getattr(self, "_physics_dt", self.model.opt.timestep),
         }
         reward = float(self.task.reward(info)) if self.task.reward else 0.0
         terminated = bool(self.task.termination(info)) if self.task.termination else False

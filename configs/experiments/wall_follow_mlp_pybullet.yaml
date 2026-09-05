@@ -1,0 +1,31 @@
+name: wall_follow-mlp-pybullet-2k
+sim: pybullet
+task: wall_follow
+robot: diffdrive_lidar
+arch: mlp
+arch_cfg:
+  hidden_sizes: [64, 64]
+  activation: tanh
+trainer:
+  algo: ppo
+  timesteps: 2048
+  lr: 0.0003
+  batch_size: 64
+  n_steps: 512
+  n_envs: 1
+  gamma: 0.99
+  device: cpu
+  seed: 0
+seeds: [0]
+eval_suite: []
+domain:
+  control_hz: 50.0
+  physics_substeps: 5
+  friction: 1.0
+  mass_scale: 1.0
+  sensor_noise_std: 0.0
+  action_delay_steps: 0
+compute: local
+gpu_type: null
+budget_usd: 0.0
+transfer_to: null

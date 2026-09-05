@@ -36,6 +36,10 @@ class HeartbeatBody(BaseModel):
     wandb_url: str | None = None
     status: str | None = None
     param_count: int | None = None
+    obs_dim: int | None = None
+    act_dim: int | None = None
+    control_hz: float | None = None
+    physics_substeps: int | None = None
 
 
 class CompleteBody(BaseModel):
@@ -46,6 +50,10 @@ class CompleteBody(BaseModel):
     checkpoint: str | None = None
     checkpoint_artifact: str | None = None
     param_count: int | None = None
+    obs_dim: int | None = None
+    act_dim: int | None = None
+    control_hz: float | None = None
+    physics_substeps: int | None = None
 
 
 class FailBody(BaseModel):
@@ -111,9 +119,53 @@ def _checkpoints_for(run: Run) -> list[dict[str, Any]]:
     return items
 
 
+def _space_dims_for(run: Run) -> tuple[int | None, int | None]:
+    """Prefer DB columns; fall back to TaskSpec / config so old MuJoCo rows match PyBullet."""
+    obs = run.obs_dim
+    act = run.act_dim
+    if obs is not None and act is not None:
+        return obs, act
+    try:
+        cfg = json.loads(run.config_json) if run.config_json else {}
+    except Exception:
+        cfg = {}
+    task_name = run.task or cfg.get("task") or "wall_follow"
+    try:
+        import robolab.tasks  # noqa: F401
+        from robolab.core.task import get_task
+
+        spec = get_task(task_name)
+        obs = obs if obs is not None else int(spec.observation.shape[0])
+        act = act if act is not None else int(spec.action.shape[0])
+    except Exception:
+        if task_name == "wall_follow":
+            obs = obs if obs is not None else 5
+            act = act if act is not None else 2
+    return obs, act
+
+
+def _domain_timing_for(run: Run) -> tuple[float | None, int | None]:
+    hz = run.control_hz
+    sub = run.physics_substeps
+    if hz is not None and sub is not None:
+        return hz, sub
+    try:
+        cfg = json.loads(run.config_json) if run.config_json else {}
+        domain = cfg.get("domain") or {}
+        if hz is None and domain.get("control_hz") is not None:
+            hz = float(domain["control_hz"])
+        if sub is None and domain.get("physics_substeps") is not None:
+            sub = int(domain["physics_substeps"])
+    except Exception:
+        pass
+    return hz, sub
+
+
 def _run_to_dict(run: Run) -> dict[str, Any]:
     total = run.total_steps or 1
     progress = min(1.0, float(run.step) / float(total)) if total else 0.0
+    obs_dim, act_dim = _space_dims_for(run)
+    control_hz, physics_substeps = _domain_timing_for(run)
     return {
         "id": run.id,
         "name": run.name,
@@ -127,6 +179,10 @@ def _run_to_dict(run: Run) -> dict[str, Any]:
         "total_steps": run.total_steps,
         "mean_return": run.mean_return,
         "param_count": run.param_count,
+        "obs_dim": obs_dim,
+        "act_dim": act_dim,
+        "control_hz": control_hz,
+        "physics_substeps": physics_substeps,
         "wandb_url": run.wandb_url,
         "error": run.error,
         "progress": progress,
@@ -193,6 +249,8 @@ def create_run(body: RunConfig, session: SessionDep) -> dict:
         total_steps=total,
         budget_usd=float(body.budget_usd or 0.0),
         gpu_type=body.gpu_type,
+        control_hz=float(body.domain.control_hz),
+        physics_substeps=int(body.domain.physics_substeps),
     )
     session.add(row)
     session.commit()
@@ -299,6 +357,14 @@ def heartbeat(run_id: str, body: HeartbeatBody, session: SessionDep) -> dict:
         run.wandb_url = body.wandb_url
     if body.param_count is not None:
         run.param_count = body.param_count
+    if body.obs_dim is not None:
+        run.obs_dim = body.obs_dim
+    if body.act_dim is not None:
+        run.act_dim = body.act_dim
+    if body.control_hz is not None:
+        run.control_hz = body.control_hz
+    if body.physics_substeps is not None:
+        run.physics_substeps = body.physics_substeps
     if body.status:
         run.status = body.status
     elif run.status in {RunStatus.QUEUED.value, RunStatus.PROVISIONING.value}:
@@ -321,6 +387,14 @@ def complete(run_id: str, body: CompleteBody, session: SessionDep) -> dict:
         run.mean_return = body.mean_return
     if body.param_count is not None:
         run.param_count = body.param_count
+    if body.obs_dim is not None:
+        run.obs_dim = body.obs_dim
+    if body.act_dim is not None:
+        run.act_dim = body.act_dim
+    if body.control_hz is not None:
+        run.control_hz = body.control_hz
+    if body.physics_substeps is not None:
+        run.physics_substeps = body.physics_substeps
     if body.checkpoint_artifact:
         run.checkpoint_artifact = body.checkpoint_artifact
     elif body.checkpoint:

@@ -12,8 +12,14 @@ dev: sync
 	  uvicorn robolab_api.main:app --host 127.0.0.1 --port 8000 --reload & \
 	cd web && npm run dev
 
+# Darwin + Xcode 16+/Apple Clang 17: pybullet's bundled zlib breaks unless
+# TARGET_OS_MAC is not auto-defined (see docs/PHASE_5_APIS.md).
 sync:
-	uv sync --all-packages --python 3.11
+	@if [ "$$(uname -s)" = "Darwin" ]; then \
+	  CFLAGS="-fno-define-target-os-macros" uv sync --all-packages --python 3.11; \
+	else \
+	  uv sync --all-packages --python 3.11; \
+	fi
 
 # Build the RunPod worker image. Tag must match ROBOLAB_WORKER_IMAGE in .env
 # (registry that RunPod can pull). Requires Docker Desktop or Colima.
@@ -32,5 +38,5 @@ worker-image:
 	@echo "Then set ROBOLAB_WORKER_IMAGE=$(IMAGE) in .env"
 
 test:
-	@echo "See docs/PHASE_4_TEST.md for the Phase 4 human gate."
+	@echo "See docs/PHASE_5_TEST.md for the Phase 5 human gate."
 	uv run --package robolab-api python -m pytest robolab_api/tests -q --tb=short

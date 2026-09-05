@@ -90,42 +90,58 @@ def list_archs_endpoint() -> dict:
     return {"archs": list_archs()}
 
 
+@app.get("/api/sims")
+def list_sims_endpoint() -> dict:
+    import robolab.sims.mujoco  # noqa: F401
+    import robolab.sims.pybullet  # noqa: F401
+    from robolab.core.sim import list_sims
+
+    return {"sims": list_sims()}
+
+
 @app.get("/api/experiments")
 def list_experiments(session: SessionDep) -> dict:
     """Phase 0 compatibility: now backed by Run rows."""
+    from robolab_api.routes.runs import _run_to_dict
+
     rows = session.exec(select(Run).order_by(Run.created_at.desc())).all()
-    return {
-        "experiments": [
+    experiments = []
+    for r in rows:
+        d = _run_to_dict(r)
+        # Experiments table uses a slightly flatter shape historically.
+        experiments.append(
             {
-                "id": r.id,
-                "name": r.name,
-                "sim": r.sim,
-                "arch": r.arch,
-                "status": r.status,
-                "progress": min(1.0, r.step / r.total_steps) if r.total_steps else 0.0,
-                "mean_return": r.mean_return,
-                "param_count": r.param_count,
-                "wandb_url": r.wandb_url,
-                "task": r.task,
-                "compute": r.compute,
-                "step": r.step,
-                "total_steps": r.total_steps,
-                "pod_id": r.pod_id,
-                "gpu_type": r.gpu_type,
-                "hourly_rate": r.hourly_rate,
-                "cost_usd": r.cost_usd,
-                "budget_usd": r.budget_usd,
-                "video_status": r.video_status,
-                "video_url": r.video_url,
-                "video_error": r.video_error,
-                "checkpoint_artifact": r.checkpoint_artifact,
-                "checkpoints": _run_checkpoints(r),
-                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "id": d["id"],
+                "name": d["name"],
+                "sim": d["sim"],
+                "arch": d["arch"],
+                "status": d["status"],
+                "progress": d["progress"],
+                "mean_return": d["mean_return"],
+                "param_count": d["param_count"],
+                "obs_dim": d["obs_dim"],
+                "act_dim": d["act_dim"],
+                "control_hz": d["control_hz"],
+                "physics_substeps": d["physics_substeps"],
+                "wandb_url": d["wandb_url"],
+                "task": d["task"],
+                "compute": d["compute"],
+                "step": d["step"],
+                "total_steps": d["total_steps"],
+                "pod_id": d["pod_id"],
+                "gpu_type": d["gpu_type"],
+                "hourly_rate": d["hourly_rate"],
+                "cost_usd": d["cost_usd"],
+                "budget_usd": d["budget_usd"],
+                "video_status": d["video_status"],
+                "video_url": d["video_url"],
+                "video_error": d["video_error"],
+                "checkpoint_artifact": d["checkpoint_artifact"],
+                "checkpoints": d["checkpoints"],
+                "created_at": d["created_at"],
             }
-            for r in rows
-        ],
-        "count": len(rows),
-    }
+        )
+    return {"experiments": experiments, "count": len(experiments)}
 
 
 @app.get("/api/budget")

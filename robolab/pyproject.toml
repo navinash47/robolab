@@ -17,6 +17,7 @@ dependencies = [
     # Required by Gymnasium RecordVideo (gymnasium[other]); Phase 4 playback.
     "moviepy>=1.0.3",
     "imageio-ffmpeg>=0.5.0",
+    "pybullet>=3.2.6",
 ]
 
 [project.scripts]

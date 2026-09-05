@@ -48,6 +48,10 @@ type RunRow = {
   progress: number;
   mean_return: number | null;
   param_count?: number | null;
+  obs_dim?: number | null;
+  act_dim?: number | null;
+  control_hz?: number | null;
+  physics_substeps?: number | null;
   wandb_url: string | null;
   step: number;
   total_steps: number;
@@ -154,6 +158,7 @@ export default function App() {
   const [budget, setBudget] = useState<Budget | null>(null);
   const [wandb, setWandb] = useState<WandbStatus | null>(null);
   const [archs, setArchs] = useState<string[]>(["mlp", "kan"]);
+  const [sims, setSims] = useState<string[]>(["mujoco", "pybullet"]);
   const [runs, setRuns] = useState<RunRow[]>([]);
   const [count, setCount] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -198,11 +203,12 @@ export default function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const [budgetRes, experimentsRes, wandbRes, archsRes] = await Promise.all([
+      const [budgetRes, experimentsRes, wandbRes, archsRes, simsRes] = await Promise.all([
         fetch("/api/budget"),
         fetch("/api/experiments"),
         fetch("/api/wandb/status"),
         fetch("/api/archs"),
+        fetch("/api/sims"),
       ]);
       if (!budgetRes.ok || !experimentsRes.ok) {
         throw new Error(
@@ -222,6 +228,10 @@ export default function App() {
       if (archsRes.ok) {
         const a = (await archsRes.json()) as { archs: string[] };
         if (a.archs?.length) setArchs(a.archs);
+      }
+      if (simsRes.ok) {
+        const s = (await simsRes.json()) as { sims: string[] };
+        if (s.sims?.length) setSims(s.sims);
       }
       setError(null);
     } catch (err) {
@@ -631,6 +641,21 @@ export default function App() {
                       onChange={(e) => setForm({ ...form, task: e.target.value })}
                     >
                       <option value="wall_follow">wall_follow</option>
+                    </select>
+                  </label>
+                  <label className="text-sm">
+                    <span className="mb-1 block text-[var(--muted)]">Sim</span>
+                    <select
+                      className="w-full rounded border border-[var(--border)] bg-white px-3 py-2"
+                      value={form.sim}
+                      onChange={(e) => setForm({ ...form, sim: e.target.value })}
+                      data-testid="sim-select"
+                    >
+                      {sims.map((s) => (
+                        <option key={s} value={s}>
+                          {s}
+                        </option>
+                      ))}
                     </select>
                   </label>
                   <label className="text-sm">
@@ -1138,6 +1163,38 @@ export default function App() {
                       {detailRun.video_status
                         ? ` · video ${detailRun.video_status}`
                         : ""}
+                    </p>
+                    <p
+                      className="mt-1 text-sm text-[var(--muted)]"
+                      data-testid="run-spaces"
+                    >
+                      Sim: <code className="text-xs">{detailRun.sim}</code>
+                      {" · "}
+                      obs_dim:{" "}
+                      <code className="text-xs" data-testid="obs-dim">
+                        {detailRun.obs_dim ?? "—"}
+                      </code>
+                      {" · "}
+                      act_dim:{" "}
+                      <code className="text-xs" data-testid="act-dim">
+                        {detailRun.act_dim ?? "—"}
+                      </code>
+                      {detailRun.control_hz != null && (
+                        <>
+                          {" · "}
+                          control_hz:{" "}
+                          <code className="text-xs">{detailRun.control_hz}</code>
+                        </>
+                      )}
+                      {detailRun.physics_substeps != null && (
+                        <>
+                          {" · "}
+                          physics_substeps:{" "}
+                          <code className="text-xs">
+                            {detailRun.physics_substeps}
+                          </code>
+                        </>
+                      )}
                     </p>
                   </div>
                   <button

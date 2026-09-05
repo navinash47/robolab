@@ -22,11 +22,12 @@ import yaml
 # Ensure registries are populated before SB3 load / env build
 import robolab.archs  # noqa: F401
 import robolab.sims.mujoco  # noqa: F401
+import robolab.sims.pybullet  # noqa: F401
 import robolab.tasks  # noqa: F401
 from robolab.core.run import RunConfig
 from robolab.core.sim import get_sim
 from robolab.core.task import get_task
-from robolab.sims.mujoco.adapter import urdf_path
+from robolab.robots.paths import urdf_path
 from robolab.train.callbacks import _post_json
 
 

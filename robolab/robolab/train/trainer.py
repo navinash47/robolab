@@ -17,11 +17,12 @@ from stable_baselines3.common.vec_env import DummyVecEnv
 # Ensure registries are populated
 import robolab.archs  # noqa: F401
 import robolab.sims.mujoco  # noqa: F401
+import robolab.sims.pybullet  # noqa: F401
 import robolab.tasks  # noqa: F401
 from robolab.core.run import RunConfig
 from robolab.core.sim import get_sim
 from robolab.core.task import get_task
-from robolab.sims.mujoco.adapter import urdf_path
+from robolab.robots.paths import urdf_path
 from robolab.train.callbacks import WandbAndHeartbeatCallback, _post_json
 from robolab.train.sb3_policy import RoboLabActorCriticPolicy
 
@@ -140,6 +141,13 @@ def train(cfg: RunConfig, run_id: str, backend_url: str) -> dict:
                 )
 
         env = build_env(cfg)
+        # Obs / action dims from the live env (must match across mujoco|pybullet).
+        obs_dim = int(env.observation_space.shape[0])  # type: ignore[index]
+        act_dim = int(env.action_space.shape[0])  # type: ignore[index]
+        control_hz = float(cfg.domain.control_hz)
+        physics_substeps = int(cfg.domain.physics_substeps)
+        physics_dt = (1.0 / max(1e-6, control_hz)) / max(1, physics_substeps)
+
         policy_kwargs = {
             "arch_name": cfg.arch,
             "arch_cfg": dict(cfg.arch_cfg),
@@ -158,9 +166,36 @@ def train(cfg: RunConfig, run_id: str, backend_url: str) -> dict:
         )
 
         param_count = int(model.policy.mlp_extractor.arch.param_count())
+        space_meta = {
+            "param_count": param_count,
+            "arch": cfg.arch,
+            "obs_dim": obs_dim,
+            "act_dim": act_dim,
+            "control_hz": control_hz,
+            "physics_substeps": physics_substeps,
+            "control_dt": 1.0 / max(1e-6, control_hz),
+            "physics_dt": physics_dt,
+        }
         if wandb_run is not None:
-            wandb_run.config.update({"param_count": param_count, "arch": cfg.arch}, allow_val_change=True)
-            wandb_run.summary["param_count"] = param_count
+            wandb_run.config.update(space_meta, allow_val_change=True)
+            for k, v in space_meta.items():
+                wandb_run.summary[k] = v
+
+        _post_json(
+            f"{backend}/api/runs/{run_id}/heartbeat",
+            {
+                "step": 0,
+                "total": cfg.trainer.timesteps,
+                "mean_return": None,
+                "wandb_url": wandb_url,
+                "status": "RUNNING",
+                "param_count": param_count,
+                "obs_dim": obs_dim,
+                "act_dim": act_dim,
+                "control_hz": control_hz,
+                "physics_substeps": physics_substeps,
+            },
+        )
 
         cb = WandbAndHeartbeatCallback(
             run_id=run_id,
@@ -206,6 +241,10 @@ def train(cfg: RunConfig, run_id: str, backend_url: str) -> dict:
             "checkpoint": str(ckpt_path.resolve()),
             "checkpoint_artifact": artifact_ref,
             "param_count": param_count,
+            "obs_dim": obs_dim,
+            "act_dim": act_dim,
+            "control_hz": control_hz,
+            "physics_substeps": physics_substeps,
         }
         _post_json(f"{backend}/api/runs/{run_id}/complete", result)
         return result
