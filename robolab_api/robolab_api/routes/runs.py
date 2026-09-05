@@ -346,8 +346,13 @@ def fail(run_id: str, body: FailBody, session: SessionDep) -> dict:
     run = session.get(Run, run_id)
     if not run:
         raise HTTPException(404, f"Run {run_id} not found")
+    # Keep a more specific error if one is already recorded (entrypoint fallback
+    # used to overwrite trainer/W&B detail with a generic exit message).
+    incoming = (body.error or "").strip()
+    existing = (run.error or "").strip()
+    if not existing or (incoming and len(incoming) >= len(existing)):
+        run.error = incoming or existing or "failed"
     run.status = RunStatus.FAILED.value
-    run.error = body.error
     run.updated_at = datetime.now(timezone.utc)
     _settle_runpod_cost(session, run, reason="fail")
     session.add(run)

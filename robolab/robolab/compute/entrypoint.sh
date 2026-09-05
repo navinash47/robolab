@@ -140,12 +140,17 @@ PY
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 
 log "Starting trainer run_id=${RUN_ID}"
-if ! uv run --package robolab python -m robolab.train.trainer \
+set +e
+uv run --package robolab python -m robolab.train.trainer \
   --run-id "${RUN_ID}" \
   --config "${CONFIG_PATH}" \
-  --backend-url "${BACKEND_URL}"; then
-  report_fail "trainer exited non-zero (W&B/MuJoCo/config). Check pod logs."
-  exit 1
+  --backend-url "${BACKEND_URL}"
+trainer_rc=$?
+set -e
+if [[ "${trainer_rc}" -ne 0 ]]; then
+  # Trainer posts a detailed /fail itself; do not overwrite with a generic message.
+  FAIL_POSTED=1
+  exit "${trainer_rc}"
 fi
 
 TRAINER_OK=1
