@@ -1,6 +1,6 @@
 # Phase 3 test — human gate checklist
 
-**Blunt status:** Phase 3 **code + docs shipped**. `RUNPOD_API_KEY` is present in local `.env`; git remote exists and is pushed (`https://github.com/navinash47/robolab.git`). Paid smoke still **blocked** on: network volume, pushed worker image, `BACKEND_PUBLIC_URL`, and `GITHUB_TOKEN` (private repo). **Not gate-passed.**
+**Blunt status:** Phase 3 **not gate-passed**. Local amd64 build **DONE** (`navinash47/robolab-worker:phase3` ~7.46GB); `ROBOLAB_WORKER_IMAGE` set; cloudflared tunnel + `BACKEND_PUBLIC_URL` OK; volume `1hyuaan8i2` / EU-RO-1 OK. **Human blocker:** Docker Hub not logged in → run `docker login` then `docker push navinash47/robolab-worker:phase3`. Restart `make dev` after push. No paid pods until then.
 
 Full zero-spend setup steps: [`docs/PHASE_3_SETUP.md`](PHASE_3_SETUP.md).
 
@@ -21,33 +21,31 @@ RUNPOD_API_KEY=rpa_…
 
 ### 2. Network volume → `.env`
 
-Create **when you are ready to pay storage** (agent will not auto-create unless you ask):
+**Active (your choice):** `robolab-workspace` → `RUNPOD_NETWORK_VOLUME_ID=1hyuaan8i2` in **EU-RO-1** (40 GB, ~$2.80/mo).
 
-- **Size tip:** **50 GB** recommended
-- **Region tip:** US DC that has your GPU type (e.g. RTX 4090)
-- **Console:** https://www.runpod.io/console/user/storage
-- **Or MCP** (only if you request it): `create-network-volume` with `name`, `size` (50), `dataCenterId`
-
-Then:
+Also set (pods must match volume DC):
 
 ```bash
-RUNPOD_NETWORK_VOLUME_ID=…   # id from console / MCP response
+RUNPOD_DATA_CENTER_ID=EU-RO-1
 ```
+
+GPU stock must exist in **EU-RO-1** or create fails. Do not attach this volume from a US pod.
 
 ### 3. Worker image (build + push)
 
-Docker must be installed locally (Desktop or Colima). Agent host had no `docker` binary.
+Colima + Docker CLI installed. Build **linux/amd64**:
 
 ```bash
-# Tag must be pullable by RunPod (Docker Hub / GHCR / etc.)
-make worker-image IMAGE=YOURUSER/robolab-worker:phase3
+make worker-image IMAGE=navinash47/robolab-worker:phase3
 docker login
-docker push YOURUSER/robolab-worker:phase3
+docker push navinash47/robolab-worker:phase3
 ```
 
 ```bash
-ROBOLAB_WORKER_IMAGE=YOURUSER/robolab-worker:phase3
+ROBOLAB_WORKER_IMAGE=navinash47/robolab-worker:phase3
 ```
+
+Local build alone is **not** enough — RunPod must pull the registry tag.
 
 ### 4. Public backend URL
 
@@ -80,13 +78,14 @@ After editing `.env`: stop `make dev`, start again.
 ## Prereqs checklist
 
 - [x] `RUNPOD_API_KEY` set (len > 0) — local `.env` (do not commit)
-- [ ] `RUNPOD_NETWORK_VOLUME_ID` set (50GB US recommended; you create)
-- [ ] `ROBOLAB_WORKER_IMAGE` pushed + set
-- [x] git remote + pushed (`origin` → navinash47/robolab) — still set `ROBOLAB_GIT_URL` + `GITHUB_TOKEN` in `.env`
-- [ ] `BACKEND_PUBLIC_URL` is HTTPS public (not localhost)
-- [ ] `WANDB_API_KEY` / `WANDB_PROJECT` set (already used in Phases 1–2)
-- [ ] `BUDGET_USD_CAP` sensible (default 100)
-- [ ] `make dev` running → http://localhost:5173 + API :8000
+- [x] `RUNPOD_NETWORK_VOLUME_ID=1hyuaan8i2` (EU-RO-1, 40 GB)
+- [x] `RUNPOD_DATA_CENTER_ID=EU-RO-1`
+- [ ] `ROBOLAB_WORKER_IMAGE` **pushed** + set (`navinash47/robolab-worker:phase3`)
+- [x] git remote + `ROBOLAB_GIT_URL` + `GITHUB_TOKEN` in `.env`
+- [x] `BACKEND_PUBLIC_URL` HTTPS tunnel (keep cloudflared alive; restart if URL changes)
+- [x] `WANDB_API_KEY` / `WANDB_PROJECT` set
+- [x] `BUDGET_USD_CAP` sensible
+- [ ] `make dev` restarted after latest `.env` edits
 - [ ] Watchdog running (API lifespan starts it; no separate process)
 
 ## Offline / free checks (no GPU spend)
