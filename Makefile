@@ -15,10 +15,15 @@ dev: sync
 sync:
 	uv sync --all-packages --python 3.11
 
+# Build the RunPod worker image. Tag must match ROBOLAB_WORKER_IMAGE in .env
+# (registry that RunPod can pull). Example:
+#   make worker-image IMAGE=yourdockerhub/robolab-worker:phase3
+#   docker push yourdockerhub/robolab-worker:phase3
+IMAGE ?= robolab/worker:phase3
 worker-image:
-	@echo "Phase 0 stub: docker/worker.Dockerfile is a placeholder. Real image lands in Phase 3."
-	@echo "Would run: docker build -f docker/worker.Dockerfile -t robolab-worker ."
+	docker build -f docker/worker.Dockerfile -t $(IMAGE) .
+	@echo "Built $(IMAGE). Push to a registry RunPod can pull, then set ROBOLAB_WORKER_IMAGE=$(IMAGE) in .env"
 
 test:
-	@echo "See docs/PHASE_1_TEST.md for the Phase 1 human gate."
-	@echo "Optional smoke: uv run --env-file .env --package robolab python -c \"import robolab.sims.mujoco, robolab.tasks, robolab.archs; print('ok')\""
+	@echo "See docs/PHASE_3_TEST.md for the Phase 3 human gate."
+	uv run --package robolab-api python -m pytest robolab_api/tests -q --tb=short

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -12,12 +14,25 @@ from robolab_api.budget import get_budget
 from robolab_api.db import Run, SessionDep, create_db_and_tables
 from robolab_api.routes import compare_router, runs_router
 from robolab_api.wandb_status import get_wandb_status
+from robolab_api.watchdog import watchdog_loop
+
+logger = logging.getLogger("robolab.api")
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     create_db_and_tables()
-    yield
+    stop = asyncio.Event()
+    task = asyncio.create_task(watchdog_loop(stop), name="robolab-watchdog")
+    logger.info("watchdog task started")
+    try:
+        yield
+    finally:
+        stop.set()
+        try:
+            await asyncio.wait_for(task, timeout=5.0)
+        except (TimeoutError, asyncio.CancelledError):
+            task.cancel()
 
 
 app = FastAPI(title="RoboLab API", version="0.1.0", lifespan=lifespan)
@@ -66,6 +81,11 @@ def list_experiments(session: SessionDep) -> dict:
                 "compute": r.compute,
                 "step": r.step,
                 "total_steps": r.total_steps,
+                "pod_id": r.pod_id,
+                "gpu_type": r.gpu_type,
+                "hourly_rate": r.hourly_rate,
+                "cost_usd": r.cost_usd,
+                "budget_usd": r.budget_usd,
             }
             for r in rows
         ],

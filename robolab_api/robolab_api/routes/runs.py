@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import os
 import uuid
 from collections.abc import AsyncIterable
 from datetime import datetime, timezone
@@ -15,8 +17,12 @@ from pydantic import BaseModel
 from sqlmodel import select
 
 from robolab.compute.local import launch_local
+from robolab.compute.runpod import RunPodConfigError, launch_runpod
 from robolab.core.run import RunConfig, RunStatus
-from robolab_api.db import Run, SessionDep
+from robolab_api.budget import refuse_if_over_cap
+from robolab_api.db import Pod, Run, SessionDep
+
+logger = logging.getLogger("robolab.runs")
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
 
@@ -54,6 +60,10 @@ class ProgressEvent(BaseModel):
     wandb_url: str | None = None
     progress: float = 0.0
     error: str | None = None
+    pod_id: str | None = None
+    hourly_rate: float | None = None
+    cost_usd: float | None = None
+    gpu_type: str | None = None
 
 
 def _run_to_dict(run: Run) -> dict[str, Any]:
@@ -76,10 +86,24 @@ def _run_to_dict(run: Run) -> dict[str, Any]:
         "error": run.error,
         "progress": progress,
         "pid": run.pid,
+        "pod_id": run.pod_id,
+        "gpu_type": run.gpu_type,
+        "hourly_rate": run.hourly_rate,
+        "cost_usd": run.cost_usd,
+        "budget_usd": run.budget_usd,
         "created_at": run.created_at.isoformat() if run.created_at else None,
         "updated_at": run.updated_at.isoformat() if run.updated_at else None,
         "config": json.loads(run.config_json) if run.config_json else {},
     }
+
+
+def _settle_runpod_cost(session, run: Run, reason: str) -> None:
+    if run.compute != "runpod":
+        return
+    from robolab_api.watchdog import finalize_cost
+
+    pod_row = session.get(Pod, run.pod_id) if run.pod_id else None
+    finalize_cost(session, run, pod_row, reason=reason)
 
 
 @router.get("")
@@ -98,11 +122,9 @@ def get_run(run_id: str, session: SessionDep) -> dict:
 
 @router.post("")
 def create_run(body: RunConfig, session: SessionDep) -> dict:
-    if body.compute != "local":
-        raise HTTPException(
-            400,
-            "Phase 1 only supports compute='local'. RunPod lands in Phase 3.",
-        )
+    if body.compute not in {"local", "runpod"}:
+        raise HTTPException(400, f"Unsupported compute={body.compute!r}")
+
     run_id = uuid.uuid4().hex[:12]
     name = body.name or f"{body.task}-{body.arch}-{body.compute}"
     total = int(body.trainer.timesteps)
@@ -118,27 +140,98 @@ def create_run(body: RunConfig, session: SessionDep) -> dict:
         config_json=body.model_dump_json(),
         step=0,
         total_steps=total,
+        budget_usd=float(body.budget_usd or 0.0),
+        gpu_type=body.gpu_type,
     )
     session.add(row)
     session.commit()
     session.refresh(row)
 
+    if body.compute == "local":
+        try:
+            proc = launch_local(body, run_id=run_id, backend_url="http://127.0.0.1:8000")
+            row.status = RunStatus.RUNNING.value
+            row.pid = proc.pid
+            row.updated_at = datetime.now(timezone.utc)
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+        except Exception as exc:
+            row.status = RunStatus.FAILED.value
+            row.error = str(exc)
+            row.updated_at = datetime.now(timezone.utc)
+            session.add(row)
+            session.commit()
+            raise HTTPException(500, f"Failed to launch local trainer: {exc}") from exc
+        return _run_to_dict(row)
+
+    # --- runpod ---
     try:
-        proc = launch_local(body, run_id=run_id, backend_url="http://127.0.0.1:8000")
-        row.status = RunStatus.RUNNING.value
-        row.pid = proc.pid
-        row.updated_at = datetime.now(timezone.utc)
-        session.add(row)
-        session.commit()
-        session.refresh(row)
-    except Exception as exc:
+        refuse_if_over_cap(session)
+    except RuntimeError as exc:
         row.status = RunStatus.FAILED.value
         row.error = str(exc)
         row.updated_at = datetime.now(timezone.utc)
         session.add(row)
         session.commit()
-        raise HTTPException(500, f"Failed to launch local trainer: {exc}") from exc
+        raise HTTPException(400, str(exc)) from exc
 
+    # Prefer CUDA on the pod even if the client left device=cpu
+    if body.trainer.device == "cpu":
+        body = body.model_copy(
+            update={"trainer": body.trainer.model_copy(update={"device": "cuda"})}
+        )
+        row.config_json = body.model_dump_json()
+
+    row.status = RunStatus.PROVISIONING.value
+    row.updated_at = datetime.now(timezone.utc)
+    session.add(row)
+    session.commit()
+
+    public = (os.environ.get("BACKEND_PUBLIC_URL") or "").strip()
+    try:
+        result = launch_runpod(body, run_id, backend_public_url=public or None)
+    except RunPodConfigError as exc:
+        row.status = RunStatus.FAILED.value
+        row.error = str(exc)
+        row.updated_at = datetime.now(timezone.utc)
+        session.add(row)
+        session.commit()
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        logger.exception("runpod launch failed")
+        row.status = RunStatus.FAILED.value
+        row.error = str(exc)
+        row.updated_at = datetime.now(timezone.utc)
+        session.add(row)
+        session.commit()
+        raise HTTPException(500, f"Failed to launch RunPod: {exc}") from exc
+
+    pod_id = str(result["pod_id"])
+    hourly = float(result["hourly_rate"])
+    gpu_type = str(result["gpu_type"])
+    now = datetime.now(timezone.utc)
+
+    row.pod_id = pod_id
+    row.hourly_rate = hourly
+    row.gpu_type = gpu_type
+    row.cost_usd = 0.0
+    row.status = RunStatus.PROVISIONING.value
+    row.updated_at = now
+    session.add(row)
+    session.add(
+        Pod(
+            id=pod_id,
+            run_id=run_id,
+            gpu_type=gpu_type,
+            hourly_rate=hourly,
+            status="PROVISIONING",
+            accrued_usd=0.0,
+            started_at=now,
+        )
+    )
+    session.commit()
+    session.refresh(row)
     return _run_to_dict(row)
 
 
@@ -157,7 +250,7 @@ def heartbeat(run_id: str, body: HeartbeatBody, session: SessionDep) -> dict:
         run.param_count = body.param_count
     if body.status:
         run.status = body.status
-    elif run.status == RunStatus.QUEUED.value:
+    elif run.status in {RunStatus.QUEUED.value, RunStatus.PROVISIONING.value}:
         run.status = RunStatus.RUNNING.value
     run.updated_at = datetime.now(timezone.utc)
     session.add(run)
@@ -181,6 +274,7 @@ def complete(run_id: str, body: CompleteBody, session: SessionDep) -> dict:
         run.step = body.step
         run.total_steps = max(run.total_steps, body.step)
     run.updated_at = datetime.now(timezone.utc)
+    _settle_runpod_cost(session, run, reason="complete")
     session.add(run)
     session.commit()
     return {"ok": True}
@@ -194,6 +288,7 @@ def fail(run_id: str, body: FailBody, session: SessionDep) -> dict:
     run.status = RunStatus.FAILED.value
     run.error = body.error
     run.updated_at = datetime.now(timezone.utc)
+    _settle_runpod_cost(session, run, reason="fail")
     session.add(run)
     session.commit()
     return {"ok": True}
@@ -231,6 +326,10 @@ async def run_events(run_id: str) -> AsyncIterable[ProgressEvent]:
                 wandb_url=run.wandb_url,
                 progress=progress,
                 error=run.error,
+                pod_id=run.pod_id,
+                hourly_rate=run.hourly_rate,
+                cost_usd=run.cost_usd,
+                gpu_type=run.gpu_type,
             )
         payload = event.model_dump_json()
         if payload != last_payload:

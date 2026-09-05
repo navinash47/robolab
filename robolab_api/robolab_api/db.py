@@ -41,18 +41,60 @@ class Run(SQLModel, table=True):
     wandb_url: Optional[str] = None
     error: Optional[str] = None
     pid: Optional[int] = None
+    pod_id: Optional[str] = None
+    gpu_type: Optional[str] = None
+    hourly_rate: Optional[float] = None
+    cost_usd: Optional[float] = None
+    budget_usd: float = 0.0
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class Pod(SQLModel, table=True):
+    """Live / historical RunPod mapping for a run."""
+
+    id: str = Field(primary_key=True)  # RunPod pod id
+    run_id: str = Field(index=True)
+    gpu_type: str = ""
+    hourly_rate: float = 0.0
+    status: str = "PROVISIONING"
+    accrued_usd: float = 0.0
+    started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    terminated_at: Optional[datetime] = None
+
+
+class CostLedger(SQLModel, table=True):
+    """Immutable cost events (month spend = sum of amount_usd)."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    run_id: str = Field(index=True)
+    pod_id: Optional[str] = None
+    amount_usd: float
+    reason: str = ""
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+_RUN_EXTRA_COLS: dict[str, str] = {
+    "param_count": "INTEGER",
+    "pod_id": "TEXT",
+    "gpu_type": "TEXT",
+    "hourly_rate": "REAL",
+    "cost_usd": "REAL",
+    "budget_usd": "REAL DEFAULT 0",
+}
+
+
 def _migrate_columns() -> None:
-    """SQLite create_all does not ADD columns — patch Run.param_count if missing."""
+    """SQLite create_all does not ADD columns — patch Run extras if missing."""
     with engine.connect() as conn:
         rows = conn.execute(text("PRAGMA table_info(run)")).fetchall()
         cols = {r[1] for r in rows}
-        if rows and "param_count" not in cols:
-            conn.execute(text("ALTER TABLE run ADD COLUMN param_count INTEGER"))
-            conn.commit()
+        if not rows:
+            return
+        for name, decl in _RUN_EXTRA_COLS.items():
+            if name not in cols:
+                conn.execute(text(f"ALTER TABLE run ADD COLUMN {name} {decl}"))
+        conn.commit()
 
 
 def create_db_and_tables() -> None:

@@ -43,6 +43,11 @@ type RunRow = {
   step: number;
   total_steps: number;
   error?: string | null;
+  pod_id?: string | null;
+  gpu_type?: string | null;
+  hourly_rate?: number | null;
+  cost_usd?: number | null;
+  budget_usd?: number | null;
 };
 
 type ExperimentsResponse = {
@@ -86,6 +91,7 @@ function statusClass(status: string): string {
       return "bg-emerald-100 text-emerald-800";
     case "RUNNING":
     case "QUEUED":
+    case "PROVISIONING":
       return "bg-sky-100 text-sky-800";
     case "FAILED":
     case "KILLED_BY_WATCHDOG":
@@ -142,6 +148,8 @@ export default function App() {
     sim: "mujoco",
     robot: "diffdrive_lidar",
     timesteps: 50_000,
+    gpu_type: "NVIDIA GeForce RTX 4090",
+    budget_usd: 0,
   });
   const esRef = useRef<Map<string, EventSource>>(new Map());
 
@@ -190,7 +198,10 @@ export default function App() {
 
   useEffect(() => {
     const live = runs.filter(
-      (r) => r.status === "RUNNING" || r.status === "QUEUED",
+      (r) =>
+        r.status === "RUNNING" ||
+        r.status === "QUEUED" ||
+        r.status === "PROVISIONING",
     );
     const map = esRef.current;
     for (const run of live) {
@@ -207,6 +218,10 @@ export default function App() {
             wandb_url: string | null;
             progress: number;
             error?: string | null;
+            pod_id?: string | null;
+            hourly_rate?: number | null;
+            cost_usd?: number | null;
+            gpu_type?: string | null;
           };
           setRuns((prev) =>
             prev.map((r) =>
@@ -220,6 +235,10 @@ export default function App() {
                     wandb_url: data.wandb_url,
                     progress: data.progress,
                     error: data.error ?? null,
+                    pod_id: data.pod_id ?? r.pod_id,
+                    hourly_rate: data.hourly_rate ?? r.hourly_rate,
+                    cost_usd: data.cost_usd ?? r.cost_usd,
+                    gpu_type: data.gpu_type ?? r.gpu_type,
                   }
                 : r,
             ),
@@ -256,6 +275,7 @@ export default function App() {
     try {
       const nSteps =
         form.timesteps <= 2048 ? 512 : form.timesteps <= 5000 ? 1024 : 2048;
+      const isRunpod = form.compute === "runpod";
       const body = {
         name: `${form.task}-${form.arch}-${form.compute}`,
         sim: form.sim,
@@ -271,7 +291,7 @@ export default function App() {
           n_steps: nSteps,
           n_envs: 1,
           gamma: 0.99,
-          device: "cpu",
+          device: isRunpod ? "cuda" : "cpu",
           seed: 0,
         },
         seeds: [0],
@@ -285,8 +305,8 @@ export default function App() {
           action_delay_steps: 0,
         },
         compute: form.compute,
-        gpu_type: null,
-        budget_usd: 0,
+        gpu_type: isRunpod ? form.gpu_type : null,
+        budget_usd: isRunpod ? Number(form.budget_usd) || 0 : 0,
         transfer_to: null,
       };
       const res = await fetch("/api/runs", {
@@ -475,8 +495,10 @@ export default function App() {
                       className="w-full rounded border border-[var(--border)] bg-white px-3 py-2"
                       value={form.compute}
                       onChange={(e) => setForm({ ...form, compute: e.target.value })}
+                      data-testid="compute-select"
                     >
                       <option value="local">local</option>
+                      <option value="runpod">runpod</option>
                     </select>
                   </label>
                   <label className="text-sm">
@@ -519,10 +541,59 @@ export default function App() {
                       <option value={2_048}>2k (quick)</option>
                     </select>
                   </label>
+                  {form.compute === "runpod" && (
+                    <>
+                      <label className="text-sm">
+                        <span className="mb-1 block text-[var(--muted)]">GPU type</span>
+                        <select
+                          className="w-full rounded border border-[var(--border)] bg-white px-3 py-2"
+                          value={form.gpu_type}
+                          onChange={(e) =>
+                            setForm({ ...form, gpu_type: e.target.value })
+                          }
+                          data-testid="gpu-type-select"
+                        >
+                          <option value="NVIDIA GeForce RTX 4090">
+                            NVIDIA GeForce RTX 4090
+                          </option>
+                          <option value="NVIDIA GeForce RTX 3090">
+                            NVIDIA GeForce RTX 3090
+                          </option>
+                          <option value="NVIDIA RTX A4000">NVIDIA RTX A4000</option>
+                        </select>
+                      </label>
+                      <label className="text-sm">
+                        <span className="mb-1 block text-[var(--muted)]">
+                          Budget USD (watchdog kill when exceeded; 0 = no per-run cap)
+                        </span>
+                        <input
+                          type="number"
+                          min={0}
+                          step={0.01}
+                          className="w-full rounded border border-[var(--border)] bg-white px-3 py-2"
+                          value={form.budget_usd}
+                          onChange={(e) =>
+                            setForm({
+                              ...form,
+                              budget_usd: Number(e.target.value),
+                            })
+                          }
+                          data-testid="budget-usd-input"
+                        />
+                      </label>
+                    </>
+                  )}
                 </div>
-                {form.arch === "kan" && (
+                {form.arch === "kan" && form.compute === "local" && (
                   <p className="mt-3 text-xs text-[var(--muted)]">
                     KAN on Mac CPU is slow — use 5k smoke for a quick gate, or 50k overnight.
+                  </p>
+                )}
+                {form.compute === "runpod" && (
+                  <p className="mt-3 text-xs text-[var(--muted)]">
+                    Requires RUNPOD_API_KEY, RUNPOD_NETWORK_VOLUME_ID, ROBOLAB_WORKER_IMAGE,
+                    ROBOLAB_GIT_URL, BACKEND_PUBLIC_URL in .env. Clean + pushed git SHA.
+                    See docs/PHASE_3_TEST.md.
                   </p>
                 )}
                 <div className="mt-4 flex gap-3">
@@ -572,6 +643,7 @@ export default function App() {
                     <th className="px-4 py-3 font-medium">Status</th>
                     <th className="px-4 py-3 font-medium">Progress</th>
                     <th className="px-4 py-3 font-medium">Mean return</th>
+                    <th className="px-4 py-3 font-medium">Cost</th>
                     <th className="px-4 py-3 font-medium">W&amp;B</th>
                   </tr>
                 </thead>
@@ -579,7 +651,7 @@ export default function App() {
                   {count === 0 ? (
                     <tr>
                       <td
-                        colSpan={8}
+                        colSpan={9}
                         className="px-4 py-16 text-center text-[var(--muted)]"
                         data-testid="empty-experiments"
                       >
@@ -589,7 +661,7 @@ export default function App() {
                   ) : count === null ? (
                     <tr>
                       <td
-                        colSpan={8}
+                        colSpan={9}
                         className="px-4 py-16 text-center text-[var(--muted)]"
                       >
                         Loading…
@@ -616,7 +688,14 @@ export default function App() {
                             }
                           />
                         </td>
-                        <td className="px-4 py-3 font-medium">{r.name}</td>
+                        <td className="px-4 py-3 font-medium">
+                          {r.name}
+                          {r.compute === "runpod" ? (
+                            <span className="ml-2 text-xs font-normal text-[var(--muted)]">
+                              runpod
+                            </span>
+                          ) : null}
+                        </td>
                         <td className="px-4 py-3">{r.sim}</td>
                         <td className="px-4 py-3">{r.arch}</td>
                         <td className="px-4 py-3">
@@ -626,6 +705,16 @@ export default function App() {
                           >
                             {r.status}
                           </span>
+                          {r.pod_id ? (
+                            <p
+                              className="mt-1 max-w-xs font-mono text-xs text-[var(--muted)]"
+                              data-testid="pod-id"
+                              title={r.pod_id}
+                            >
+                              pod {r.pod_id.slice(0, 12)}
+                              {r.pod_id.length > 12 ? "…" : ""}
+                            </p>
+                          ) : null}
                           {r.error ? (
                             <p
                               className="mt-1 max-w-xs text-xs text-red-700"
@@ -655,6 +744,23 @@ export default function App() {
                           data-testid="mean-return"
                         >
                           {r.mean_return == null ? "—" : r.mean_return.toFixed(2)}
+                        </td>
+                        <td className="px-4 py-3 text-xs tabular-nums" data-testid="run-cost">
+                          {r.compute === "runpod" ? (
+                            <>
+                              <div>
+                                {r.hourly_rate != null
+                                  ? `${formatUsd(r.hourly_rate)}/hr`
+                                  : "—/hr"}
+                              </div>
+                              <div className="text-[var(--muted)]">
+                                accrued{" "}
+                                {r.cost_usd != null ? formatUsd(r.cost_usd) : "$0.00"}
+                              </div>
+                            </>
+                          ) : (
+                            <span className="text-[var(--muted)]">local</span>
+                          )}
                         </td>
                         <td className="px-4 py-3">
                           {r.wandb_url ? (

@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class RunStatus(str, Enum):
     QUEUED = "QUEUED"
+    PROVISIONING = "PROVISIONING"
     RUNNING = "RUNNING"
     COMPLETE = "COMPLETE"
     FAILED = "FAILED"
