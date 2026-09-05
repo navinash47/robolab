@@ -48,6 +48,8 @@ MUJOCO_LOG.TXT
 .DS_Store
 .idea/
 .vscode/
+.cursor/
+STATUS.md
 *.swp
 *.swo
 
