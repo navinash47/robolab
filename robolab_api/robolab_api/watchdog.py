@@ -228,18 +228,21 @@ def sweep_once() -> list[str]:
                 if pod_row:
                     pod_row.accrued_usd = accrued
                     pod_row.hourly_rate = rate
-                    if run.status == RunStatus.PROVISIONING.value:
+                    # Do NOT promote PROVISIONING→RUNNING from desiredStatus alone.
+                    # That started the 10min stale-heartbeat clock before the entrypoint
+                    # finished git clone / uv sync, and killed healthy smoke pods.
+                    if pod_row.status == "PROVISIONING":
                         desired = (remote.get("desiredStatus") or "").upper()
                         if desired == "RUNNING" or remote.get("runtime"):
-                            run.status = RunStatus.RUNNING.value
                             pod_row.status = "RUNNING"
                     session.add(pod_row)
                 session.add(run)
 
                 updated = _aware(run.updated_at)
                 hb_age = (now - updated).total_seconds() if updated else None
-                # During PROVISIONING, heartbeats may not have started — only
-                # apply stale check once we've seen RUNNING or a heartbeat.
+                # Stale heartbeats only apply after the trainer has actually checked in
+                # (status RUNNING via /heartbeat). While PROVISIONING, allow long image
+                # pull + uv sync; still enforce MAX_RUNTIME_MIN / budget.
                 if run.status == RunStatus.PROVISIONING.value:
                     hb_age_for_kill = None
                 else:

@@ -1,13 +1,37 @@
-#!/usr/bin/env bash
 # RoboLab worker entrypoint — always self-terminates the RunPod on EXIT.
 set -euo pipefail
 
 log() { echo "[robolab-entrypoint] $*"; }
 
+TRAINER_OK=0
+FAIL_POSTED=0
+
+report_fail() {
+  local msg="$1"
+  [[ "${FAIL_POSTED}" -eq 1 ]] && return 0
+  FAIL_POSTED=1
+  if [[ -z "${BACKEND_URL:-}" || -z "${RUN_ID:-}" ]]; then
+    log "WARN: cannot POST fail (BACKEND_URL/RUN_ID unset): ${msg}"
+    return 0
+  fi
+  # JSON-escape message without relying on a full venv
+  local escaped
+  escaped=$(printf '%s' "${msg}" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null \
+    || printf '"%s"' "${msg//\"/\\\"}")
+  curl -sS --max-time 30 -X POST "${BACKEND_URL}/api/runs/${RUN_ID}/fail" \
+    -H "Content-Type: application/json" \
+    -d "{\"error\": ${escaped}}" \
+    && log "Posted fail to backend" \
+    || log "WARN: fail POST did not succeed"
+}
+
 cleanup() {
   local code=$?
   # Do not let set -e abort mid-cleanup; always attempt terminate.
   set +e
+  if [[ "${TRAINER_OK}" -ne 1 && "${code}" -ne 0 ]]; then
+    report_fail "entrypoint exited code=${code} before trainer completed (see pod logs: git clone / uv sync / trainer)"
+  fi
   log "EXIT trap (code=${code}) — terminating pod ${RUNPOD_POD_ID:-<unset>}"
   if [[ -n "${RUNPOD_POD_ID:-}" && -n "${RUNPOD_API_KEY:-}" ]]; then
     local ok=0
@@ -56,10 +80,12 @@ trap cleanup EXIT
 export WANDB_PROJECT="${WANDB_PROJECT:-robolab}"
 export MUJOCO_GL="${MUJOCO_GL:-egl}"
 export PYTHONUNBUFFERED=1
+export UV_CACHE_DIR="${UV_CACHE_DIR:-/workspace/.cache/uv}"
+export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/workspace/.cache}"
 
 REPO_DIR="${REPO_DIR:-/workspace/robolab}"
 RUN_DIR="/workspace/runs/${RUN_ID}"
-mkdir -p "${RUN_DIR}" /workspace/.cache
+mkdir -p "${RUN_DIR}" /workspace/.cache/uv
 
 # Optional private clone
 CLONE_URL="${ROBOLAB_GIT_URL}"
@@ -90,7 +116,7 @@ if ! command -v uv >/dev/null 2>&1; then
   export PATH="${HOME}/.local/bin:${PATH}"
 fi
 
-log "uv sync"
+log "uv sync (cache=${UV_CACHE_DIR})"
 uv sync --all-packages --python 3.11
 
 CONFIG_PATH="${RUN_DIR}/config.yaml"
@@ -111,4 +137,5 @@ uv run --package robolab python -m robolab.train.trainer \
   --config "${CONFIG_PATH}" \
   --backend-url "${BACKEND_URL}"
 
+TRAINER_OK=1
 log "Trainer finished OK"

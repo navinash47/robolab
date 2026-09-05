@@ -305,7 +305,7 @@ def create_training_pod(
                     "cloud_type": cloud_type,
                     "gpu_count": 1,
                     "volume_in_gb": 0,
-                    "container_disk_in_gb": 30,
+                    "container_disk_in_gb": 50,
                     "volume_mount_path": "/workspace",
                     "network_volume_id": env_bundle["RUNPOD_NETWORK_VOLUME_ID"],
                     "env": pod_env,
