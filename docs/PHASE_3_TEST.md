@@ -155,6 +155,7 @@ Use **2k (quick)** or **5k (smoke)** first. Keep `BUDGET_USD_CAP` low if nervous
 | 400 `BACKEND_PUBLIC_URL` / localhost | Tunnel missing; pods need public URL |
 | 400 dirty tree / not on remote | Commit + push before launch |
 | 400 monthly budget exhausted | `CostLedger` sum ≥ `BUDGET_USD_CAP` |
+| trainer fail: `eglQueryString` / OpenGL NoneType | MuJoCo EGL broken in worker — use `MUJOCO_GL=osmesa` + libosmesa6 (fixed in entrypoint/Dockerfile) |
 | FAILED after ~10m with 0 steps / pod vanished | Watchdog promoted PROVISIONING→RUNNING on machine-up, then stale-heartbeat kill at 10m during `uv sync` — fixed (stay PROVISIONING until /heartbeat) |
 | PROVISIONING forever after Secure create | Watchdog false-positive orphan kill when GraphQL `env` empty — fixed: map `pod_id`→run via DB Pod table |
 | FAILED 0 steps: *no instances available* / No RunPod capacity | **Community** cloud with EU-RO-1 volume, or true stock out — set `RUNPOD_CLOUD_TYPE=SECURE`, retry; UI shows error under status chip |
