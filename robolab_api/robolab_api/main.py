@@ -1,4 +1,4 @@
-"""RoboLab FastAPI entrypoint (Phase 0)."""
+"""RoboLab FastAPI entrypoint."""
 
 from __future__ import annotations
 
@@ -9,7 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import select
 
 from robolab_api.budget import get_budget
-from robolab_api.db import Experiment, SessionDep, create_db_and_tables
+from robolab_api.db import Run, SessionDep, create_db_and_tables
+from robolab_api.routes import runs_router
 
 
 @asynccontextmanager
@@ -28,6 +29,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(runs_router)
+
 
 @app.get("/health")
 def health() -> dict[str, str]:
@@ -36,9 +39,26 @@ def health() -> dict[str, str]:
 
 @app.get("/api/experiments")
 def list_experiments(session: SessionDep) -> dict:
-    rows = session.exec(select(Experiment)).all()
+    """Phase 0 compatibility: now backed by Run rows."""
+    rows = session.exec(select(Run).order_by(Run.created_at.desc())).all()
     return {
-        "experiments": [{"id": r.id, "name": r.name} for r in rows],
+        "experiments": [
+            {
+                "id": r.id,
+                "name": r.name,
+                "sim": r.sim,
+                "arch": r.arch,
+                "status": r.status,
+                "progress": min(1.0, r.step / r.total_steps) if r.total_steps else 0.0,
+                "mean_return": r.mean_return,
+                "wandb_url": r.wandb_url,
+                "task": r.task,
+                "compute": r.compute,
+                "step": r.step,
+                "total_steps": r.total_steps,
+            }
+            for r in rows
+        ],
         "count": len(rows),
     }
 

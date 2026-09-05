@@ -41,6 +41,7 @@ checkpoints/
 wandb/
 runs/
 artifacts/
+MUJOCO_LOG.TXT
 
 # OS / IDE
 .DS_Store

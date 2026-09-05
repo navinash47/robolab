@@ -1,0 +1,39 @@
+<mujoco model="diffdrive_wall_follow">
+  <!-- Mirrors robots/diffdrive_lidar/robot.urdf geometry on a freejoint + arena.
+       Lidar rays are cast in Python via mujoco.mj_ray (not MJCF rangefinders).
+       Drive is applied as planar freejoint velocities (stable for RL); wheel joints are visual. -->
+  <compiler angle="radian" balanceinertia="true" autolimits="true"/>
+  <option timestep="0.002" gravity="0 0 -9.81" integrator="implicitfast"/>
+
+  <default>
+    <geom friction="1 0.5 0.01" rgba="0.7 0.7 0.7 1"/>
+  </default>
+
+  <worldbody>
+    <light pos="0 0 3" dir="0 0 -1" diffuse="0.8 0.8 0.8"/>
+    <geom name="floor" type="plane" size="5 5 0.05" rgba="0.85 0.88 0.9 1" friction="1 0.5 0.01"/>
+
+    <!-- Corridor walls (inner channel ~1.2 m wide along +x) -->
+    <geom name="wall_left" type="box" pos="2.0 0.7 0.25" size="2.5 0.05 0.25" rgba="0.55 0.45 0.35 1"/>
+    <geom name="wall_right" type="box" pos="2.0 -0.7 0.25" size="2.5 0.05 0.25" rgba="0.55 0.45 0.35 1"/>
+    <geom name="wall_end" type="box" pos="4.5 0 0.25" size="0.05 0.75 0.25" rgba="0.45 0.4 0.35 1"/>
+    <geom name="wall_start_l" type="box" pos="-0.4 0.7 0.25" size="0.2 0.05 0.25" rgba="0.55 0.45 0.35 1"/>
+    <geom name="wall_start_r" type="box" pos="-0.4 -0.7 0.25" size="0.2 0.05 0.25" rgba="0.55 0.45 0.35 1"/>
+
+    <!-- Robot geoms use group 1 so mj_ray can ignore self-hits (cast group 0 only). -->
+    <body name="base" pos="0.3 0 0.05">
+      <freejoint name="root"/>
+      <geom name="chassis" type="box" size="0.15 0.12 0.04" pos="0 0 0.09" mass="4.0" rgba="0.15 0.35 0.75 1" group="1" contype="1" conaffinity="1"/>
+      <geom name="lidar_mount" type="cylinder" size="0.03 0.02" pos="0.08 0 0.15" mass="0.05" rgba="0.2 0.2 0.2 1" contype="0" conaffinity="0" group="1"/>
+
+      <body name="left_wheel" pos="0 0.14 0">
+        <joint name="left_wheel_joint" type="hinge" axis="0 1 0" damping="0.1"/>
+        <geom name="left_wheel_geom" type="cylinder" size="0.05 0.02" quat="0.7071 0.7071 0 0" mass="0.4" rgba="0.1 0.1 0.1 1" friction="1.5 0.5 0.01" group="1" contype="0" conaffinity="0"/>
+      </body>
+      <body name="right_wheel" pos="0 -0.14 0">
+        <joint name="right_wheel_joint" type="hinge" axis="0 1 0" damping="0.1"/>
+        <geom name="right_wheel_geom" type="cylinder" size="0.05 0.02" quat="0.7071 0.7071 0 0" mass="0.4" rgba="0.1 0.1 0.1 1" friction="1.5 0.5 0.01" group="1" contype="0" conaffinity="0"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>

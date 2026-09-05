@@ -1,3 +1,3 @@
-"""RoboLab core package (Phase 0 stub)."""
+"""RoboLab core package."""
 
 __version__ = "0.1.0"

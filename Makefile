@@ -20,4 +20,5 @@ worker-image:
 	@echo "Would run: docker build -f docker/worker.Dockerfile -t robolab-worker ."
 
 test:
-	@echo "Phase 0: no automated tests yet. See docs/PHASE_0_TEST.md for the human gate."
+	@echo "See docs/PHASE_1_TEST.md for the Phase 1 human gate."
+	@echo "Optional smoke: uv run --env-file .env --package robolab python -c \"import robolab.sims.mujoco, robolab.tasks, robolab.archs; print('ok')\""
