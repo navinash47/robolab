@@ -1,13 +1,13 @@
 @import "tailwindcss";
 
 :root {
-  --bg: #0f1419;
-  --surface: #1a222c;
-  --border: #2a3544;
-  --text: #e8eef4;
-  --muted: #8b9aab;
-  --accent: #3d8bfd;
-  --ok: #3ecf8e;
+  --bg: #e8eef2;
+  --surface: #ffffff;
+  --border: #c5ced6;
+  --text: #15202b;
+  --muted: #5c6773;
+  --accent: #0b6e4f;
+  --ok: #0b6e4f;
   font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
   color: var(--text);
   background: var(--bg);
@@ -24,8 +24,8 @@ body {
   margin: 0;
   min-height: 100vh;
   background:
-    radial-gradient(ellipse 80% 50% at 10% -20%, #1a3a5c55, transparent),
-    radial-gradient(ellipse 60% 40% at 90% 0%, #0d4a3a33, transparent),
+    radial-gradient(ellipse 70% 45% at 0% -10%, #c5ddd4 0%, transparent 55%),
+    radial-gradient(ellipse 50% 35% at 100% 0%, #d5dde6 0%, transparent 50%),
     var(--bg);
 }
 

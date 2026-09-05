@@ -97,7 +97,7 @@ export default function App() {
       <main className="mx-auto max-w-5xl px-6 py-10">
         {error && (
           <div
-            className="mb-6 rounded border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200"
+            className="mb-6 rounded border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800"
             role="alert"
           >
             {error}
@@ -113,7 +113,7 @@ export default function App() {
 
         <div className="overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--surface)]">
           <table className="w-full text-left text-sm">
-            <thead className="border-b border-[var(--border)] bg-black/20 text-[var(--muted)]">
+            <thead className="border-b border-[var(--border)] bg-[#f0f4f7] text-[var(--muted)]">
               <tr>
                 <th className="px-4 py-3 font-medium">Name</th>
                 <th className="px-4 py-3 font-medium">Sim</th>
