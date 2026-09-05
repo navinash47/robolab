@@ -446,7 +446,7 @@ def video_fail(run_id: str, body: VideoFailBody, session: SessionDep) -> dict:
     return {"ok": True}
 
 
-@router.get("/{run_id}/video")
+@router.api_route("/{run_id}/video", methods=["GET", "HEAD"])
 def get_video(run_id: str, session: SessionDep):
     from fastapi.responses import FileResponse
 
@@ -458,10 +458,12 @@ def get_video(run_id: str, session: SessionDep):
     path = Path(run.video_path)
     if not path.is_file():
         raise HTTPException(404, f"Video file missing: {path}")
+    # inline (not attachment) so the dashboard <video> can play via Vite proxy
     return FileResponse(
         path,
         media_type="video/mp4",
         filename=f"{run_id}-playback.mp4",
+        content_disposition_type="inline",
     )
 
 

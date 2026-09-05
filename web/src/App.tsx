@@ -164,6 +164,16 @@ export default function App() {
     budget_usd: 0,
   });
   const esRef = useRef<Map<string, EventSource>>(new Map());
+  const detailRef = useRef<HTMLDivElement>(null);
+
+  function openRunDetail(runId: string) {
+    setDetailId(runId);
+  }
+
+  useEffect(() => {
+    if (!detailId) return;
+    detailRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [detailId]);
 
   const refresh = useCallback(async () => {
     try {
@@ -375,7 +385,7 @@ export default function App() {
 
   async function renderVideo(runId: string) {
     setRenderingId(runId);
-    setDetailId(runId);
+    openRunDetail(runId);
     setError(null);
     try {
       const res = await fetch(`/api/runs/${runId}/render`, { method: "POST" });
@@ -677,8 +687,8 @@ export default function App() {
               </button>
             </div>
 
-            <div className="overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--surface)]">
-              <table className="w-full text-left text-sm">
+            <div className="overflow-x-auto rounded-lg border border-[var(--border)] bg-[var(--surface)]">
+              <table className="w-full min-w-[960px] text-left text-sm">
                 <thead className="border-b border-[var(--border)] bg-[#f0f4f7] text-[var(--muted)]">
                   <tr>
                     <th className="px-4 py-3 font-medium">Pick</th>
@@ -738,7 +748,7 @@ export default function App() {
                           <button
                             type="button"
                             className="text-left hover:underline"
-                            onClick={() => setDetailId(r.id)}
+                            onClick={() => openRunDetail(r.id)}
                             data-testid={`open-run-${r.id}`}
                           >
                             {r.name}
@@ -853,8 +863,8 @@ export default function App() {
                               {r.video_status === "READY" ? (
                                 <button
                                   type="button"
-                                  className="text-left text-xs text-[var(--accent)] underline"
-                                  onClick={() => setDetailId(r.id)}
+                                  className="relative z-10 text-left text-xs text-[var(--accent)] underline"
+                                  onClick={() => openRunDetail(r.id)}
                                   data-testid={`watch-video-${r.id}`}
                                 >
                                   Watch
@@ -882,6 +892,7 @@ export default function App() {
 
             {detailRun && (
               <div
+                ref={detailRef}
                 className="mt-6 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-5"
                 data-testid="run-detail"
               >
@@ -917,8 +928,14 @@ export default function App() {
                   <video
                     key={detailRun.video_url ?? detailRun.id}
                     controls
+                    playsInline
+                    preload="metadata"
                     className="max-h-[360px] w-full rounded bg-black"
-                    src={`/api/runs/${detailRun.id}/video`}
+                    src={
+                      detailRun.video_url?.startsWith("/")
+                        ? detailRun.video_url
+                        : `/api/runs/${detailRun.id}/video`
+                    }
                     data-testid="video-player"
                   >
                     Your browser does not support video.
