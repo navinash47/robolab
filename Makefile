@@ -16,13 +16,18 @@ sync:
 	uv sync --all-packages --python 3.11
 
 # Build the RunPod worker image. Tag must match ROBOLAB_WORKER_IMAGE in .env
-# (registry that RunPod can pull). Example:
+# (registry that RunPod can pull). Requires Docker Desktop or Colima.
+# Example:
 #   make worker-image IMAGE=yourdockerhub/robolab-worker:phase3
-#   docker push yourdockerhub/robolab-worker:phase3
-IMAGE ?= robolab/worker:phase3
+#   docker login && docker push yourdockerhub/robolab-worker:phase3
+# See docs/PHASE_3_SETUP.md for GHCR and full gate checklist.
+IMAGE ?= yourdockerhub/robolab-worker:phase3
 worker-image:
+	@command -v docker >/dev/null || { echo "docker not found — install Docker Desktop or: brew install colima docker && colima start"; exit 1; }
 	docker build -f docker/worker.Dockerfile -t $(IMAGE) .
-	@echo "Built $(IMAGE). Push to a registry RunPod can pull, then set ROBOLAB_WORKER_IMAGE=$(IMAGE) in .env"
+	@echo "Built $(IMAGE)."
+	@echo "Next: docker login && docker push $(IMAGE)"
+	@echo "Then set ROBOLAB_WORKER_IMAGE=$(IMAGE) in .env"
 
 test:
 	@echo "See docs/PHASE_3_TEST.md for the Phase 3 human gate."

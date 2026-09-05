@@ -1,6 +1,8 @@
 # Phase 3 test — human gate checklist
 
-**Blunt status:** Phase 3 **code + docs shipped**. Live paid RunPod smoke was **not** run from this agent session (`RUNPOD_API_KEY` empty; no network volume). **Not gate-passed** until you fill `.env`, push a worker image, tunnel the backend, and click through the UI below.
+**Blunt status:** Phase 3 **code + docs shipped**. `RUNPOD_API_KEY` is present in local `.env`; git remote exists and is pushed (`https://github.com/navinash47/robolab.git`). Paid smoke still **blocked** on: network volume, pushed worker image, `BACKEND_PUBLIC_URL`, and `GITHUB_TOKEN` (private repo). **Not gate-passed.**
+
+Full zero-spend setup steps: [`docs/PHASE_3_SETUP.md`](PHASE_3_SETUP.md).
 
 ## Human blockers (do these before any paid launch)
 
@@ -19,10 +21,12 @@ RUNPOD_API_KEY=rpa_…
 
 ### 2. Network volume → `.env`
 
-No volumes exist on the account yet (`list-network-volumes` was empty). Create one:
+Create **when you are ready to pay storage** (agent will not auto-create unless you ask):
 
-- **Console:** https://www.runpod.io/console/user/storage — create volume (min 10 GB) in a DC that has your GPU type
-- **Or MCP** (Cursor, with `user-runpod` connected): `create-network-volume` with `name`, `size` (≥10), `dataCenterId` (from `list-data-centers`)
+- **Size tip:** **50 GB** recommended
+- **Region tip:** US DC that has your GPU type (e.g. RTX 4090)
+- **Console:** https://www.runpod.io/console/user/storage
+- **Or MCP** (only if you request it): `create-network-volume` with `name`, `size` (50), `dataCenterId`
 
 Then:
 
@@ -32,9 +36,12 @@ RUNPOD_NETWORK_VOLUME_ID=…   # id from console / MCP response
 
 ### 3. Worker image (build + push)
 
+Docker must be installed locally (Desktop or Colima). Agent host had no `docker` binary.
+
 ```bash
 # Tag must be pullable by RunPod (Docker Hub / GHCR / etc.)
 make worker-image IMAGE=YOURUSER/robolab-worker:phase3
+docker login
 docker push YOURUSER/robolab-worker:phase3
 ```
 
@@ -44,23 +51,24 @@ ROBOLAB_WORKER_IMAGE=YOURUSER/robolab-worker:phase3
 
 ### 4. Public backend URL
 
-Pods cannot reach `localhost:8000`. Expose the API, e.g.:
+Pods cannot reach `localhost:8000`. Free option (`cloudflared` is on PATH here):
 
 ```bash
-# example — any HTTPS tunnel to :8000
-ngrok http 8000
-# or Cloudflare Tunnel
+make dev   # API on :8000
+cloudflared tunnel --url http://127.0.0.1:8000
 ```
 
 ```bash
-BACKEND_PUBLIC_URL=https://YOUR-TUNNEL.example
+BACKEND_PUBLIC_URL=https://YOUR-SUBDOMAIN.trycloudflare.com
 ```
+
+(ngrok also fine: `ngrok http 8000`. Kingdom dashboard tunnel scripts are **not** for RoboLab.)
 
 ### 5. Git clone URL + clean push
 
 ```bash
-ROBOLAB_GIT_URL=https://github.com/YOUR/robolab.git   # must be clonable at GIT_SHA
-# GITHUB_TOKEN=…   # only if private
+ROBOLAB_GIT_URL=https://github.com/navinash47/robolab.git
+GITHUB_TOKEN=…   # required while repo is private (repo scope)
 ```
 
 Launch **refuses** if: dirty working tree, no git remote, or HEAD SHA not on a remote.
@@ -71,10 +79,10 @@ After editing `.env`: stop `make dev`, start again.
 
 ## Prereqs checklist
 
-- [ ] `RUNPOD_API_KEY` set (len > 0)
-- [ ] `RUNPOD_NETWORK_VOLUME_ID` set
+- [x] `RUNPOD_API_KEY` set (len > 0) — local `.env` (do not commit)
+- [ ] `RUNPOD_NETWORK_VOLUME_ID` set (50GB US recommended; you create)
 - [ ] `ROBOLAB_WORKER_IMAGE` pushed + set
-- [ ] `ROBOLAB_GIT_URL` set; repo clean + pushed
+- [x] git remote + pushed (`origin` → navinash47/robolab) — still set `ROBOLAB_GIT_URL` + `GITHUB_TOKEN` in `.env`
 - [ ] `BACKEND_PUBLIC_URL` is HTTPS public (not localhost)
 - [ ] `WANDB_API_KEY` / `WANDB_PROJECT` set (already used in Phases 1–2)
 - [ ] `BUDGET_USD_CAP` sensible (default 100)
