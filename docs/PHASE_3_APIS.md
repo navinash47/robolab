@@ -220,7 +220,7 @@ Backend watchdog: `terminate_pod()` tries REST v2 DELETE, then SDK GraphQL.
 | `BACKEND_PUBLIC_URL` | yes | Public base URL pods use for heartbeats (not `localhost`) |
 | `BUDGET_USD_CAP` | yes (default 100) | Refuse launches when month ledger ≥ cap |
 | `MAX_RUNTIME_MIN` | no (default 120) | Watchdog + pod env hard wall-clock |
-| `RUNPOD_CLOUD_TYPE` | no (default COMMUNITY) | `COMMUNITY` \| `SECURE` \| `ALL` |
+| `RUNPOD_CLOUD_TYPE` | no (default **SECURE**) | `COMMUNITY` \| `SECURE` \| `ALL` — EU-RO-1 + network volume often refuses Community; app falls back Community↔Secure |
 | `WANDB_API_KEY` / `WANDB_PROJECT` | yes | Passed into pod env |
 | `GITHUB_TOKEN` | if private repo | Optional clone auth |
 | `BACKEND_URL` | on pod | Set from `BACKEND_PUBLIC_URL` at launch |

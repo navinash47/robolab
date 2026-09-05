@@ -15,11 +15,29 @@ from typing import Any
 from robolab.compute.local import repo_root, write_run_config
 from robolab.core.run import RunConfig
 
+# Prefer mid-tier GPUs that are usually stocked in EU-RO-1 with network volumes.
+# Keep this list cost-safe (no H100/A100/H200 auto-fallback).
 DEFAULT_GPU_FALLBACKS = [
     "NVIDIA GeForce RTX 4090",
     "NVIDIA GeForce RTX 3090",
+    "NVIDIA GeForce RTX 3070",
     "NVIDIA RTX A4000",
+    "NVIDIA RTX A4500",
+    "NVIDIA RTX 4000 Ada Generation",
 ]
+
+
+def _cloud_type_candidates(preferred: str) -> list[str]:
+    """Order cloud types to try. EU-RO-1 + network volume often has Secure stock only."""
+    preferred = preferred.strip().upper()
+    if preferred == "ALL":
+        return ["ALL"]
+    if preferred == "COMMUNITY":
+        # Community frequently refuses with volume attached; fall back to Secure.
+        return ["COMMUNITY", "SECURE"]
+    if preferred == "SECURE":
+        return ["SECURE", "COMMUNITY"]
+    return ["SECURE", "COMMUNITY"]
 
 
 class RunPodConfigError(RuntimeError):
@@ -235,9 +253,11 @@ def create_training_pod(
             "Use ngrok or Cloudflare Tunnel and set BACKEND_PUBLIC_URL in .env."
         )
 
-    cloud_type = (os.environ.get("RUNPOD_CLOUD_TYPE") or "COMMUNITY").strip().upper()
-    if cloud_type not in {"ALL", "COMMUNITY", "SECURE"}:
-        cloud_type = "COMMUNITY"
+    # Secure is the reliable default for EU-RO-1 + network volume; Community often
+    # returns "no instances available" even when the capacity catalog shows High stock.
+    cloud_pref = (os.environ.get("RUNPOD_CLOUD_TYPE") or "SECURE").strip().upper()
+    if cloud_pref not in {"ALL", "COMMUNITY", "SECURE"}:
+        cloud_pref = "SECURE"
     max_runtime = str(int(float(os.environ.get("MAX_RUNTIME_MIN", "120"))))
 
     config_json = cfg.model_dump_json()
@@ -272,49 +292,61 @@ def create_training_pod(
 
     preferred = cfg.gpu_type or DEFAULT_GPU_FALLBACKS[0]
     last_err: Exception | None = None
+    attempts: list[str] = []
     for gpu_type_id in _gpu_candidates(preferred):
-        try:
-            hourly = query_hourly_rate(gpu_type_id, cloud_type=cloud_type)
-            create_kwargs: dict[str, Any] = {
-                "name": f"robolab-{run_id}",
-                "image_name": env_bundle["ROBOLAB_WORKER_IMAGE"],
-                "gpu_type_id": gpu_type_id,
-                "cloud_type": cloud_type,
-                "gpu_count": 1,
-                "volume_in_gb": 0,
-                "container_disk_in_gb": 30,
-                "volume_mount_path": "/workspace",
-                "network_volume_id": env_bundle["RUNPOD_NETWORK_VOLUME_ID"],
-                "env": pod_env,
-            }
-            if data_center_id:
-                create_kwargs["data_center_id"] = data_center_id
-            raw = runpod.create_pod(**create_kwargs)
-            pod_id = raw.get("id") if isinstance(raw, dict) else None
-            if not pod_id:
-                raise RunPodConfigError(f"create_pod returned no id: {raw!r}")
-            # Prefer live costPerHr when present
-            live = None
+        for cloud_type in _cloud_type_candidates(cloud_pref):
             try:
-                live = runpod.get_pod(pod_id)
-            except Exception:
+                rate_cloud = "SECURE" if cloud_type == "ALL" else cloud_type
+                hourly = query_hourly_rate(gpu_type_id, cloud_type=rate_cloud)
+                create_kwargs: dict[str, Any] = {
+                    "name": f"robolab-{run_id}",
+                    "image_name": env_bundle["ROBOLAB_WORKER_IMAGE"],
+                    "gpu_type_id": gpu_type_id,
+                    "cloud_type": cloud_type,
+                    "gpu_count": 1,
+                    "volume_in_gb": 0,
+                    "container_disk_in_gb": 30,
+                    "volume_mount_path": "/workspace",
+                    "network_volume_id": env_bundle["RUNPOD_NETWORK_VOLUME_ID"],
+                    "env": pod_env,
+                }
+                if data_center_id:
+                    create_kwargs["data_center_id"] = data_center_id
+                raw = runpod.create_pod(**create_kwargs)
+                pod_id = raw.get("id") if isinstance(raw, dict) else None
+                if not pod_id:
+                    raise RunPodConfigError(f"create_pod returned no id: {raw!r}")
+                # Prefer live costPerHr when present
                 live = None
-            if live and live.get("costPerHr") is not None:
-                hourly = float(live["costPerHr"])
-            return {
-                "pod_id": str(pod_id),
-                "gpu_type": gpu_type_id,
-                "hourly_rate": float(hourly),
-                "raw": raw,
-                "estimated_cost_usd": estimate_cost_usd(float(hourly)),
-            }
-        except RunPodConfigError:
-            raise
-        except Exception as exc:
-            last_err = exc
-            continue
+                try:
+                    live = runpod.get_pod(pod_id)
+                except Exception:
+                    live = None
+                if live and live.get("costPerHr") is not None:
+                    hourly = float(live["costPerHr"])
+                return {
+                    "pod_id": str(pod_id),
+                    "gpu_type": gpu_type_id,
+                    "hourly_rate": float(hourly),
+                    "raw": raw,
+                    "estimated_cost_usd": estimate_cost_usd(float(hourly)),
+                    "cloud_type": cloud_type,
+                    "data_center_id": data_center_id,
+                }
+            except RunPodConfigError:
+                raise
+            except Exception as exc:
+                last_err = exc
+                attempts.append(f"{gpu_type_id}/{cloud_type}: {exc}")
+                continue
+    dc = data_center_id or "any-DC"
+    vol = env_bundle["RUNPOD_NETWORK_VOLUME_ID"]
+    detail = attempts[-1] if attempts else str(last_err)
     raise RunPodConfigError(
-        f"Failed to create RunPod pod for GPUs {_gpu_candidates(preferred)}: {last_err}"
+        f"No RunPod capacity in {dc} (volume {vol}) for "
+        f"GPUs {_gpu_candidates(preferred)} / clouds {_cloud_type_candidates(cloud_pref)}. "
+        f"Last error: {detail}. "
+        f"Try RUNPOD_CLOUD_TYPE=SECURE (or ALL), a different GPU, or retry later."
     )
 
 

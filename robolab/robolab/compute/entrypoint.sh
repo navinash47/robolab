@@ -6,16 +6,38 @@ log() { echo "[robolab-entrypoint] $*"; }
 
 cleanup() {
   local code=$?
+  # Do not let set -e abort mid-cleanup; always attempt terminate.
+  set +e
   log "EXIT trap (code=${code}) — terminating pod ${RUNPOD_POD_ID:-<unset>}"
   if [[ -n "${RUNPOD_POD_ID:-}" && -n "${RUNPOD_API_KEY:-}" ]]; then
-    # Prefer REST v2 (api.runpod.io/v2); fall back to documented v1 Manage Pods path.
-    curl -sS -X DELETE \
+    local ok=0
+    local http
+    # Prefer REST v2; then legacy v1; then GraphQL (some keys 403 on REST DELETE).
+    http=$(curl -sS -o /tmp/robolab-term.out -w "%{http_code}" -X DELETE \
       "https://api.runpod.io/v2/pods/${RUNPOD_POD_ID}" \
-      -H "Authorization: Bearer ${RUNPOD_API_KEY}" \
-      || curl -sS -X DELETE \
+      -H "Authorization: Bearer ${RUNPOD_API_KEY}" || true)
+    if [[ "${http}" =~ ^(200|204|404|410)$ ]]; then
+      log "Terminated via REST v2 (HTTP ${http})"; ok=1
+    else
+      http=$(curl -sS -o /tmp/robolab-term.out -w "%{http_code}" -X DELETE \
         "https://rest.runpod.io/v1/pods/${RUNPOD_POD_ID}" \
-        -H "Authorization: Bearer ${RUNPOD_API_KEY}" \
-      || log "WARN: terminate request failed (pod may already be gone)"
+        -H "Authorization: Bearer ${RUNPOD_API_KEY}" || true)
+      if [[ "${http}" =~ ^(200|204|404|410)$ ]]; then
+        log "Terminated via REST v1 (HTTP ${http})"; ok=1
+      else
+        local gql
+        gql=$(curl -sS -X POST "https://api.runpod.io/graphql" \
+          -H "Authorization: Bearer ${RUNPOD_API_KEY}" \
+          -H "Content-Type: application/json" \
+          --data "{\"query\":\"mutation { podTerminate(input: {podId: \\\"${RUNPOD_POD_ID}\\\"}) }\"}" || true)
+        if echo "${gql}" | grep -Eq 'podTerminate|null|"id"'; then
+          log "Terminated via GraphQL"; ok=1
+        fi
+      fi
+    fi
+    if [[ "${ok}" -ne 1 ]]; then
+      log "WARN: terminate failed (REST ${http:-?}); watchdog should reclaim"
+    fi
   else
     log "WARN: RUNPOD_POD_ID or RUNPOD_API_KEY missing — cannot self-terminate"
   fi

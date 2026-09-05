@@ -596,10 +596,13 @@ export default function App() {
                           data-testid="gpu-type-select"
                         >
                           <option value="NVIDIA GeForce RTX 4090">
-                            NVIDIA GeForce RTX 4090
+                            NVIDIA GeForce RTX 4090 (Secure ~$0.34/hr)
                           </option>
                           <option value="NVIDIA GeForce RTX 3090">
                             NVIDIA GeForce RTX 3090
+                          </option>
+                          <option value="NVIDIA GeForce RTX 3070">
+                            NVIDIA GeForce RTX 3070 (cheap smoke)
                           </option>
                           <option value="NVIDIA RTX A4000">NVIDIA RTX A4000</option>
                         </select>
@@ -767,11 +770,12 @@ export default function App() {
                           ) : null}
                           {r.error ? (
                             <p
-                              className="mt-1 max-w-xs text-xs text-red-700"
+                              className="mt-1 max-w-md whitespace-pre-wrap text-xs text-red-700"
                               title={r.error}
+                              data-testid="run-error"
                             >
-                              {r.error.slice(0, 120)}
-                              {r.error.length > 120 ? "…" : ""}
+                              {r.error.slice(0, 280)}
+                              {r.error.length > 280 ? "…" : ""}
                             </p>
                           ) : null}
                         </td>

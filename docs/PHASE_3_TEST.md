@@ -1,15 +1,23 @@
 # Phase 3 test — human gate checklist
 
-**Blunt status (Sep 4 night resume):** Phase 3 **not gate-passed** (human paid smoke still required). Infra unblocked:
+**Blunt status (Sep 4 night resume + capacity fix):** Phase 3 **not gate-passed** until a paid Secure-cloud smoke completes end-to-end. Three FAILED UI rows explained:
+
+| Run | Why FAILED at 0/2048 |
+|---|---|
+| `phase3-refuse-check` ×2 | Intentional refuse: `RUNPOD_API_KEY` missing in the then-running API process (HTTP 400 + FAILED row). Not a capacity bug. |
+| `wall_follow-mlp-runpod` | **Community cloud capacity refuse** in `EU-RO-1` with volume `1hyuaan8i2`: create_pod returned *no instances available* for 4090/3090/A4000. Catalog can show High while Community+volume still refuses. **Secure create succeeds.** |
+
+Infra:
 
 | Item | Status |
 |---|---|
 | Worker image on Hub | **DONE** `avinashnandyala2/robolab-worker:phase3` |
 | Volume | **OK** `1hyuaan8i2` / EU-RO-1 / 40 GB |
 | `RUNPOD_DATA_CENTER_ID` | **OK** EU-RO-1 |
-| `make dev` + cloudflared | Restart after resume; refresh `BACKEND_PUBLIC_URL` if tunnel URL changed |
-| Pods overnight | **0** (storage only) |
-| Dirty tree / unpushed HEAD | Must be clean + pushed before launch (git gate) |
+| `RUNPOD_CLOUD_TYPE` | **Must be SECURE** (default in code + `.env.example`; Community→Secure fallback on refuse) |
+| `make dev` + cloudflared | Keep alive; refresh `BACKEND_PUBLIC_URL` if tunnel URL changes |
+| Pods overnight | Prefer **0** (storage only) |
+| Dirty tree / unpushed HEAD | Launch git gate refuses dirty or unpushed HEAD |
 
 **Security:** A Docker Hub PAT was exposed in an earlier chat — **rotate it** at https://hub.docker.com/settings/security (do not paste the new token into chat).
 
@@ -38,9 +46,10 @@ Also set (pods must match volume DC):
 
 ```bash
 RUNPOD_DATA_CENTER_ID=EU-RO-1
+RUNPOD_CLOUD_TYPE=SECURE
 ```
 
-GPU stock must exist in **EU-RO-1** or create fails. Do not attach this volume from a US pod.
+GPU stock must exist in **EU-RO-1** on the chosen cloud (Secure for this volume). Do not attach this volume from a US pod. Do not rely on Community for EU-RO-1+volume — it often hard-refuses.
 
 ### 3. Worker image (build + push)
 
@@ -54,7 +63,7 @@ docker push avinashnandyala2/robolab-worker:phase3
 ROBOLAB_WORKER_IMAGE=avinashnandyala2/robolab-worker:phase3
 ```
 
-Local build alone is **not** enough — RunPod must pull the registry tag. **Hub push is done** as of this resume.
+Local build alone is **not** enough — RunPod must pull the registry tag. **Hub push is done** as of this resume. Rebuild/push again after `entrypoint.sh` changes (GraphQL terminate fallback).
 
 ### 4. Public backend URL
 
@@ -89,6 +98,7 @@ After editing `.env`: stop `make dev`, start again.
 - [x] `RUNPOD_API_KEY` set (len > 0) — local `.env` (do not commit)
 - [x] `RUNPOD_NETWORK_VOLUME_ID=1hyuaan8i2` (EU-RO-1, 40 GB)
 - [x] `RUNPOD_DATA_CENTER_ID=EU-RO-1`
+- [x] `RUNPOD_CLOUD_TYPE=SECURE` (Community+volume in EU-RO-1 was the wall_follow fail)
 - [x] `ROBOLAB_WORKER_IMAGE` **pushed** + set (`avinashnandyala2/robolab-worker:phase3`)
 - [x] git remote + `ROBOLAB_GIT_URL` + `GITHUB_TOKEN` in `.env`
 - [x] `BACKEND_PUBLIC_URL` HTTPS tunnel (keep cloudflared alive; restart if URL changes)
@@ -114,12 +124,12 @@ UI: **New Run → compute runpod** should show GPU + Budget USD fields. Starting
 
 ## Exact clicks — happy path (costs money)
 
-Use **2k (quick)** or **5k (smoke)** first. Keep `BUDGET_USD_CAP` low if nervous.
+Use **2k (quick)** or **5k (smoke)** first. Keep `BUDGET_USD_CAP` low if nervous. Prefer **Secure** cloud (`.env`).
 
 1. Open http://localhost:5173
 2. **New Run** → Compute: **runpod**
 3. Arch: **mlp**, Task: **wall_follow**, Timesteps: **2k (quick)**
-4. GPU: RTX 4090 (or fallback), Budget USD: **0** (no per-run cap; month cap still applies)
+4. GPU: RTX 4090 (or RTX 3070 cheap smoke), Budget USD: **0** (no per-run cap; month cap still applies)
 5. **Start**
 6. **Expect:**
    - Status `PROVISIONING` with **pod id** under the chip
@@ -127,7 +137,7 @@ Use **2k (quick)** or **5k (smoke)** first. Keep `BUDGET_USD_CAP` low if nervous
    - RunPod console shows the pod
    - Status → `RUNNING`, progress advances, W&B link
    - Status → `COMPLETE`
-   - Pod **disappears** from RunPod console (entrypoint EXIT DELETE)
+   - Pod **disappears** from RunPod console (entrypoint EXIT DELETE / GraphQL fallback; watchdog if REST 403)
    - Dashboard shows final accrued cost; budget header month spend increases
 
 ## Exact clicks — watchdog kill (`budget_usd: 0.05`)
@@ -145,8 +155,9 @@ Use **2k (quick)** or **5k (smoke)** first. Keep `BUDGET_USD_CAP` low if nervous
 | 400 `BACKEND_PUBLIC_URL` / localhost | Tunnel missing; pods need public URL |
 | 400 dirty tree / not on remote | Commit + push before launch |
 | 400 monthly budget exhausted | `CostLedger` sum ≥ `BUDGET_USD_CAP` |
+| FAILED 0 steps: *no instances available* / No RunPod capacity | **Community** cloud with EU-RO-1 volume, or true stock out — set `RUNPOD_CLOUD_TYPE=SECURE`, retry; UI shows error under status chip |
 | PROVISIONING forever | Image pull fail / DC capacity / volume DC mismatch |
-| Pod stays after COMPLETE | Entrypoint missing `RUNPOD_API_KEY` / `RUNPOD_POD_ID`; watchdog should still kill on stale heartbeat |
+| Pod stays after COMPLETE | Entrypoint REST DELETE 403 — rebuild image with GraphQL fallback; watchdog should still kill on stale heartbeat |
 | MCP list-pods works but app 400 | Expected — MCP OAuth ≠ `RUNPOD_API_KEY` in `.env` |
 
 ## Local-only limitation
