@@ -1,24 +1,21 @@
 # Phase 1 human test
 
 **Blunt status (2026-09-04):** Phase 1 **application code is in place** (core interfaces, MuJoCo adapter, `diffdrive_lidar`, `wall_follow`, `mlp`, SB3 custom policy, local runner, `POST /runs`, heartbeat + SSE, dashboard New Run).  
-**Not human-gate-ready yet for COMPLETE + W&B curve.** Do **not** mark the Phase 1 human gate passed. Phase 2 has **not** started.
+**Auth key recovered from screenshot into `.env` (86-char `wandb_v1_`); GraphQL viewer probe returns 200.** Do **not** mark the Phase 1 human gate passed until a full local train shows COMPLETE + W&B curve. Phase 2 has **not** started.
 
-## Root cause of W&B 401 (diagnosed)
+## Root cause of W&B 401 (diagnosed → fixed for auth)
 
 | Check | Result |
 |---|---|
-| `.env` has `WANDB_API_KEY` / `WANDB_PROJECT` | Yes (`.gitignore` covers `.env`) |
+| `.env` has `WANDB_API_KEY` / `WANDB_PROJECT` | Yes (`.gitignore` covers `.env`); `WANDB_PROJECT=robolab` |
 | Key whitespace / quotes | Clean (no quotes, no leading/trailing WS) |
-| Key shape | **Bad:** present key is `wandb_v1_` + **76** chars (**total 85**). Current W&B cloud keys are `wandb_v1_` + **77** (**total 86**). Looks **truncated/corrupt**. |
-| `GET https://api.wandb.ai/viewer` Bearer | **HTTP 401** body `{"error":"invalid api key"}` |
-| GraphQL with same key | **HTTP 401** same error |
-| `wandb` SDK | 0.29.0 (supports long keys; not the issue) |
-| Env → trainer subprocess | **OK** — trainer logs show credentials loaded from `WANDB_API_KEY`; child inherits API env via `os.environ.copy()` / explicit forward |
-| `WANDB_MODE=offline` | Not set |
-| `WANDB_ENTITY` missing | Not the 401 cause (auth fails before entity/project routing) |
-| Alternate key in `~/.netrc` | None |
+| Key shape | **OK now:** `wandb_v1_` + **77** chars (**total 86**), transcribed from the new-key modal |
+| `GET https://api.wandb.ai/viewer` Bearer | **HTTP 404** (endpoint gone; do not use) |
+| GraphQL `viewer { id }` with Bearer | **HTTP 200** (auth OK) |
+| `wandb` SDK | 0.29.0 (supports long keys) |
+| Env → trainer subprocess | **OK** — child inherits API env via `os.environ.copy()` / explicit forward |
 
-**Verdict:** bad/truncated API key in `.env` — **not** a missing-entity bug and **not** a subprocess env bug. A human **must paste a new key**. Do not fake W&B success.
+**Verdict:** prior 401 was a truncated/wrong key. Screenshot key is complete and authenticates. Human gate still needs a successful train+W&B path.
 
 ---
 
@@ -46,25 +43,28 @@ cd /Users/avinashnandyala/Projects/robolab
 make dev
 ```
 
-5. Verify auth (must print `viewer_status 200`, not 401):
+5. Verify auth (must print `graphql_status 200` with a viewer id — not 401):
 
 ```bash
 cd /Users/avinashnandyala/Projects/robolab
 uv run --env-file .env --package robolab python - <<'PY'
-import os, urllib.request
+import os, json, urllib.request
 key = os.environ.get("WANDB_API_KEY","").strip()
 assert key, "WANDB_API_KEY empty"
 print("key_len", len(key), "prefix", key[:8])
 req = urllib.request.Request(
-    "https://api.wandb.ai/viewer",
-    headers={"Authorization": f"Bearer {key}"},
+    "https://api.wandb.ai/graphql",
+    data=b'{"query":"query Viewer { viewer { id username } }"}',
+    headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+    method="POST",
 )
 with urllib.request.urlopen(req, timeout=20) as r:
-    print("viewer_status", r.status)
+    body = json.loads(r.read().decode())
+    print("graphql_status", r.status, "viewer", body.get("data", {}).get("viewer"))
 PY
 ```
 
-6. Dashboard header should show **W&B: key valid** (not truncated / 401). Or: `curl -s http://127.0.0.1:8000/api/wandb/status`.
+6. Dashboard header should show **W&B: key valid**. Or: `curl -s http://127.0.0.1:8000/api/wandb/status`.
 
 ---
 

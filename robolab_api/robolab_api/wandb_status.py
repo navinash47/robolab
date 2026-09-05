@@ -42,20 +42,34 @@ def key_shape_hint(key: str) -> str | None:
 
 
 def probe_viewer(key: str, timeout_s: float = 8.0) -> tuple[bool | None, str]:
-    """GET https://api.wandb.ai/viewer with Bearer key. Returns (ok, detail)."""
+    """Auth-check key via W&B GraphQL viewer query. Returns (ok, detail).
+
+    Legacy REST GET /viewer now 404s on api.wandb.ai; GraphQL is the live probe.
+    """
+    body = b'{"query":"{ viewer { id } }"}'
     req = urllib.request.Request(
-        "https://api.wandb.ai/viewer",
-        headers={"Authorization": f"Bearer {key}", "User-Agent": "robolab/wandb-status"},
-        method="GET",
+        "https://api.wandb.ai/graphql",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "User-Agent": "robolab/wandb-status",
+        },
+        method="POST",
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-            return True, f"viewer HTTP {resp.status}"
+            raw = resp.read()[:500].decode("utf-8", "replace").replace(key, "[REDACTED]")
+            # Valid keys return data.viewer; invalid often still HTTP 200 with errors
+            if '"viewer"' in raw and '"errors"' not in raw:
+                return True, f"graphql viewer HTTP {resp.status}"
+            if '"errors"' in raw or '"viewer":null' in raw.replace(" ", ""):
+                return False, f"graphql viewer rejected: {raw[:180]}"
+            return True, f"graphql viewer HTTP {resp.status}"
     except urllib.error.HTTPError as exc:
-        body = exc.read()[:200].decode("utf-8", "replace")
-        # Never echo the key if it somehow appears
-        body = body.replace(key, "[REDACTED]")
-        return False, f"viewer HTTP {exc.code}: {body}"
+        err_body = exc.read()[:200].decode("utf-8", "replace")
+        err_body = err_body.replace(key, "[REDACTED]")
+        return False, f"graphql HTTP {exc.code}: {err_body}"
     except Exception as exc:  # noqa: BLE001 — surface probe failures cleanly
         return None, f"{type(exc).__name__}: {exc}"
 
