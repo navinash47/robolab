@@ -265,15 +265,22 @@ def sweep_once() -> list[str]:
                 # Our pod row exists; wait for env / run linkage — never orphan-kill.
                 decision = KillDecision(False)
             else:
-                decision = decide_kill(
-                    run_id=run_id,
-                    run_known=run is not None,
-                    heartbeat_age_sec=None,
-                    runtime_min=0.0,
-                    max_runtime_min=max_runtime,
-                    accrued_usd=0.0,
-                    budget_usd=0.0,
-                )
+                # Live pod not in our Pod table. Only orphan-kill RoboLab-named pods
+                # that advertise a RUN_ID we don't know. Never kill strangers or
+                # env-less pods (GraphQL often omits env; that was a false positive).
+                name = str(remote.get("name") or "")
+                if run_id and not run and name.startswith("robolab-"):
+                    decision = decide_kill(
+                        run_id=run_id,
+                        run_known=False,
+                        heartbeat_age_sec=None,
+                        runtime_min=0.0,
+                        max_runtime_min=max_runtime,
+                        accrued_usd=0.0,
+                        budget_usd=0.0,
+                    )
+                else:
+                    decision = KillDecision(False)
 
             if decision.should_kill:
                 _kill_run(session, run, pod_id, decision.reason)
