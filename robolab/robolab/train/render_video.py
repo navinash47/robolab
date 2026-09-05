@@ -21,6 +21,9 @@ import yaml
 
 # Ensure registries are populated before SB3 load / env build
 import robolab.archs  # noqa: F401
+import robolab.sims.genesis  # noqa: F401
+import robolab.sims.isaac_sim  # noqa: F401
+import robolab.sims.isaaclab  # noqa: F401
 import robolab.sims.mujoco  # noqa: F401
 import robolab.sims.pybullet  # noqa: F401
 import robolab.tasks  # noqa: F401

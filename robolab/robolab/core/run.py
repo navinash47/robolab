@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class RunStatus(str, Enum):
@@ -33,7 +33,7 @@ class TrainerCfg(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     algo: Literal["ppo", "sac"] = "ppo"
-    timesteps: int = 50_000
+    timesteps: int = Field(default=50_000, ge=1, le=10_000_000)
     lr: float = 3e-4
     batch_size: int = 64
     n_steps: int = 2048
@@ -41,6 +41,13 @@ class TrainerCfg(BaseModel):
     gamma: float = 0.99
     device: str = "cpu"
     seed: int = 0
+
+    @field_validator("timesteps")
+    @classmethod
+    def _timesteps_positive(cls, v: int) -> int:
+        if v < 1 or v > 10_000_000:
+            raise ValueError("timesteps must be an integer in [1, 10000000]")
+        return int(v)
 
 
 class RunConfig(BaseModel):

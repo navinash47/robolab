@@ -16,6 +16,9 @@ from stable_baselines3.common.vec_env import DummyVecEnv
 
 # Ensure registries are populated
 import robolab.archs  # noqa: F401
+import robolab.sims.genesis  # noqa: F401
+import robolab.sims.isaac_sim  # noqa: F401
+import robolab.sims.isaaclab  # noqa: F401
 import robolab.sims.mujoco  # noqa: F401
 import robolab.sims.pybullet  # noqa: F401
 import robolab.tasks  # noqa: F401

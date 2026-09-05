@@ -33,6 +33,18 @@ def list_sims() -> list[str]:
     return sorted(_SIM_REGISTRY)
 
 
+def list_sim_details() -> dict[str, dict[str, list[str]]]:
+    """name → {capabilities: [...]} for UI capability flags."""
+    out: dict[str, dict[str, list[str]]] = {}
+    for name, cls in sorted(_SIM_REGISTRY.items()):
+        try:
+            caps = sorted(cls().capabilities())
+        except Exception:
+            caps = ["error"]
+        out[name] = {"capabilities": caps}
+    return out
+
+
 class SimAdapter(ABC):
     name: str
 

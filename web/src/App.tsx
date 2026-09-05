@@ -159,6 +159,8 @@ export default function App() {
   const [wandb, setWandb] = useState<WandbStatus | null>(null);
   const [archs, setArchs] = useState<string[]>(["mlp", "kan"]);
   const [sims, setSims] = useState<string[]>(["mujoco", "pybullet"]);
+  const [simMeta, setSimMeta] = useState<Record<string, { capabilities: string[] }>>({});
+  const [tasks, setTasks] = useState<string[]>(["wall_follow"]);
   const [runs, setRuns] = useState<RunRow[]>([]);
   const [count, setCount] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -175,6 +177,7 @@ export default function App() {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [filters, setFilters] = useState<ExperimentFilters>(EMPTY_FILTERS);
   const [sortKey, setSortKey] = useState<SortKey>("created_desc");
+  const [timestepMode, setTimestepMode] = useState<"preset" | "custom">("preset");
   const [form, setForm] = useState({
     compute: "local",
     arch: "mlp",
@@ -204,13 +207,15 @@ export default function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const [budgetRes, experimentsRes, wandbRes, archsRes, simsRes] = await Promise.all([
-        fetch("/api/budget"),
-        fetch("/api/experiments"),
-        fetch("/api/wandb/status"),
-        fetch("/api/archs"),
-        fetch("/api/sims"),
-      ]);
+      const [budgetRes, experimentsRes, wandbRes, archsRes, simsRes, tasksRes] =
+        await Promise.all([
+          fetch("/api/budget"),
+          fetch("/api/experiments"),
+          fetch("/api/wandb/status"),
+          fetch("/api/archs"),
+          fetch("/api/sims"),
+          fetch("/api/tasks"),
+        ]);
       if (!budgetRes.ok || !experimentsRes.ok) {
         throw new Error(
           `API error: budget ${budgetRes.status}, experiments ${experimentsRes.status}`,
@@ -231,8 +236,16 @@ export default function App() {
         if (a.archs?.length) setArchs(a.archs);
       }
       if (simsRes.ok) {
-        const s = (await simsRes.json()) as { sims: string[] };
+        const s = (await simsRes.json()) as {
+          sims: string[];
+          meta?: Record<string, { capabilities: string[] }>;
+        };
         if (s.sims?.length) setSims(s.sims);
+        if (s.meta) setSimMeta(s.meta);
+      }
+      if (tasksRes.ok) {
+        const t = (await tasksRes.json()) as { tasks: string[] };
+        if (t.tasks?.length) setTasks(t.tasks);
       }
       setError(null);
     } catch (err) {
@@ -327,8 +340,11 @@ export default function App() {
     setSubmitting(true);
     setError(null);
     try {
-      const nSteps =
-        form.timesteps <= 2048 ? 512 : form.timesteps <= 5000 ? 1024 : 2048;
+      const steps = Math.floor(Number(form.timesteps));
+      if (!Number.isFinite(steps) || steps < 1 || steps > 10_000_000) {
+        throw new Error("Timesteps must be an integer between 1 and 10,000,000");
+      }
+      const nSteps = steps <= 2048 ? 512 : steps <= 5000 ? 1024 : 2048;
       const isRunpod = form.compute === "runpod";
       const body = {
         name: `${form.task}-${form.arch}-${form.compute}`,
@@ -339,7 +355,7 @@ export default function App() {
         arch_cfg: archCfgFor(form.arch),
         trainer: {
           algo: "ppo",
-          timesteps: form.timesteps,
+          timesteps: steps,
           lr: 0.0003,
           batch_size: 64,
           n_steps: nSteps,
@@ -684,8 +700,13 @@ export default function App() {
                       className="w-full rounded border border-[var(--border)] bg-white px-3 py-2"
                       value={form.task}
                       onChange={(e) => setForm({ ...form, task: e.target.value })}
+                      data-testid="task-select"
                     >
-                      <option value="wall_follow">wall_follow</option>
+                      {tasks.map((t) => (
+                        <option key={t} value={t}>
+                          {t}
+                        </option>
+                      ))}
                     </select>
                   </label>
                   <label className="text-sm">
@@ -696,27 +717,74 @@ export default function App() {
                       onChange={(e) => setForm({ ...form, sim: e.target.value })}
                       data-testid="sim-select"
                     >
-                      {sims.map((s) => (
-                        <option key={s} value={s}>
-                          {s}
-                        </option>
-                      ))}
+                      {sims.map((s) => {
+                        const caps = simMeta[s]?.capabilities ?? [];
+                        const stub = caps.includes("stub");
+                        const needsInstall = caps.includes("requires_install");
+                        const label = stub
+                          ? `${s} (stub — needs NVIDIA)`
+                          : needsInstall
+                            ? `${s} (install genesis-world)`
+                            : s;
+                        return (
+                          <option key={s} value={s}>
+                            {label}
+                          </option>
+                        );
+                      })}
                     </select>
                   </label>
-                  <label className="text-sm">
+                  <label className="text-sm sm:col-span-2">
                     <span className="mb-1 block text-[var(--muted)]">Timesteps</span>
-                    <select
-                      className="w-full rounded border border-[var(--border)] bg-white px-3 py-2"
-                      value={form.timesteps}
-                      onChange={(e) =>
-                        setForm({ ...form, timesteps: Number(e.target.value) })
-                      }
-                      data-testid="timesteps-select"
-                    >
-                      <option value={50_000}>50k</option>
-                      <option value={5_000}>5k (smoke)</option>
-                      <option value={2_048}>2k (quick)</option>
-                    </select>
+                    <div className="flex flex-wrap gap-2">
+                      <select
+                        className="min-w-[10rem] flex-1 rounded border border-[var(--border)] bg-white px-3 py-2"
+                        value={
+                          timestepMode === "custom"
+                            ? "custom"
+                            : String(form.timesteps)
+                        }
+                        onChange={(e) => {
+                          if (e.target.value === "custom") {
+                            setTimestepMode("custom");
+                            return;
+                          }
+                          setTimestepMode("preset");
+                          setForm({
+                            ...form,
+                            timesteps: Number(e.target.value),
+                          });
+                        }}
+                        data-testid="timesteps-select"
+                      >
+                        <option value={50_000}>50k</option>
+                        <option value={5_000}>5k (smoke)</option>
+                        <option value={2_048}>2k (quick)</option>
+                        <option value="custom">Custom…</option>
+                      </select>
+                      {timestepMode === "custom" && (
+                        <input
+                          type="number"
+                          min={1}
+                          max={10_000_000}
+                          step={1}
+                          className="w-40 rounded border border-[var(--border)] bg-white px-3 py-2"
+                          value={form.timesteps}
+                          onChange={(e) =>
+                            setForm({
+                              ...form,
+                              timesteps: Number(e.target.value),
+                            })
+                          }
+                          data-testid="timesteps-custom"
+                          aria-label="Custom timesteps"
+                        />
+                      )}
+                    </div>
+                    <span className="mt-1 block text-xs text-[var(--muted)]">
+                      Any integer 1–10,000,000. Prefer mujoco/pybullet for new tasks;
+                      genesis needs optional install; isaac* are stubs.
+                    </span>
                   </label>
                   {form.compute === "runpod" && (
                     <>

@@ -98,11 +98,22 @@ def list_archs_endpoint() -> dict:
 
 @app.get("/api/sims")
 def list_sims_endpoint() -> dict:
+    import robolab.sims.genesis  # noqa: F401
+    import robolab.sims.isaac_sim  # noqa: F401
+    import robolab.sims.isaaclab  # noqa: F401
     import robolab.sims.mujoco  # noqa: F401
     import robolab.sims.pybullet  # noqa: F401
-    from robolab.core.sim import list_sims
+    from robolab.core.sim import list_sim_details, list_sims
 
-    return {"sims": list_sims()}
+    return {"sims": list_sims(), "meta": list_sim_details()}
+
+
+@app.get("/api/tasks")
+def list_tasks_endpoint() -> dict:
+    import robolab.tasks  # noqa: F401
+    from robolab.core.task import list_tasks
+
+    return {"tasks": list_tasks()}
 
 
 @app.get("/api/experiments")

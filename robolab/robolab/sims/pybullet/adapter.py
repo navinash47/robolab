@@ -1,4 +1,4 @@
-"""PyBullet SimAdapter + Gymnasium wall-follow env (same URDF as MuJoCo)."""
+"""PyBullet SimAdapter + Gymnasium diffdrive env (multi-task worlds)."""
 
 from __future__ import annotations
 
@@ -14,27 +14,18 @@ from robolab.core.run import DomainParams
 from robolab.core.sim import SimAdapter, register_sim
 from robolab.core.task import TaskSpec
 from robolab.robots.paths import urdf_path
+from robolab.tasks.worlds import (
+    build_observation,
+    enrich_task_info,
+    layout_for_task,
+)
 
 LIDAR_ANGLES_DEG = (0.0, 45.0, -45.0, 90.0, -90.0)
 LIDAR_MAX = 5.0
 
-# Corridor boxes matching robots/diffdrive_lidar/scene.xml (half-extents + center).
-_CORRIDOR_BOXES: list[tuple[list[float], list[float], list[float]]] = [
-    # (half_extents, position, rgba)
-    ([6.5, 0.05, 0.25], [6.0, 0.7, 0.25], [0.55, 0.45, 0.35, 1.0]),  # wall_left
-    ([6.5, 0.05, 0.25], [6.0, -0.7, 0.25], [0.55, 0.45, 0.35, 1.0]),  # wall_right
-    ([0.05, 0.75, 0.25], [12.5, 0.0, 0.25], [0.45, 0.4, 0.35, 1.0]),  # wall_end
-    ([0.2, 0.05, 0.25], [-0.4, 0.7, 0.25], [0.55, 0.45, 0.35, 1.0]),  # wall_start_l
-    ([0.2, 0.05, 0.25], [-0.4, -0.7, 0.25], [0.55, 0.45, 0.35, 1.0]),  # wall_start_r
-]
-
 
 class DiffDriveLidarPybulletEnv(gym.Env):
-    """Differential-drive robot with ray-cast lidar in a PyBullet corridor.
-
-    Drive model matches MuJoCo Phase 1: kinematic planar pose updates
-    (not wheel torque dynamics) so wall_follow TaskSpec stays unchanged.
-    """
+    """Differential-drive robot with ray-cast lidar in a PyBullet task world."""
 
     metadata = {"render_modes": ["rgb_array"], "render_fps": 30}
 
@@ -50,12 +41,14 @@ class DiffDriveLidarPybulletEnv(gym.Env):
         self.domain = domain
         self.render_mode = render_mode
         self._urdf = Path(urdf)
+        self._layout = layout_for_task(task.name)
+        self._path_s = 0.0
 
-        n_rays = len(LIDAR_ANGLES_DEG)
+        obs_shape = tuple(task.observation.shape)
         self.observation_space = spaces.Box(
-            low=0.0,
+            low=float(task.observation.low),
             high=float(task.observation.high),
-            shape=(n_rays,),
+            shape=obs_shape,
             dtype=np.float32,
         )
         self.action_space = spaces.Box(
@@ -86,10 +79,7 @@ class DiffDriveLidarPybulletEnv(gym.Env):
         p.setGravity(0, 0, -9.81, physicsClientId=self._cid)
         p.setTimeStep(self._physics_dt, physicsClientId=self._cid)
 
-        # Floor plane
-        floor_col = p.createCollisionShape(
-            p.GEOM_PLANE, physicsClientId=self._cid
-        )
+        floor_col = p.createCollisionShape(p.GEOM_PLANE, physicsClientId=self._cid)
         floor_vis = p.createVisualShape(
             p.GEOM_PLANE,
             rgbaColor=[0.85, 0.88, 0.9, 1.0],
@@ -103,7 +93,7 @@ class DiffDriveLidarPybulletEnv(gym.Env):
             physicsClientId=self._cid,
         )
 
-        for half, pos, rgba in _CORRIDOR_BOXES:
+        for half, pos, rgba in self._layout.boxes:
             col = p.createCollisionShape(
                 p.GEOM_BOX, halfExtents=half, physicsClientId=self._cid
             )
@@ -124,10 +114,11 @@ class DiffDriveLidarPybulletEnv(gym.Env):
         if not self._urdf.is_file():
             raise FileNotFoundError(f"URDF missing: {self._urdf}")
         flags = getattr(p, "URDF_USE_INERTIA_FROM_FILE", 0)
+        sx, sy = self._layout.spawn_xy
         self._robot_id = p.loadURDF(
             str(self._urdf.resolve()),
-            basePosition=[0.3, 0.0, 0.05],
-            baseOrientation=p.getQuaternionFromEuler([0, 0, 0]),
+            basePosition=[sx, sy, 0.05],
+            baseOrientation=p.getQuaternionFromEuler([0, 0, self._layout.spawn_yaw]),
             useFixedBase=0,
             flags=flags,
             physicsClientId=self._cid,
@@ -135,7 +126,6 @@ class DiffDriveLidarPybulletEnv(gym.Env):
         if self._robot_id < 0:
             raise RuntimeError(f"loadURDF failed for {self._urdf}")
 
-        # Disable default joint motors (docs: motors on by default).
         n_joints = p.getNumJoints(self._robot_id, physicsClientId=self._cid)
         for j in range(n_joints):
             p.setJointMotorControl2(
@@ -145,7 +135,6 @@ class DiffDriveLidarPybulletEnv(gym.Env):
                 force=0.0,
                 physicsClientId=self._cid,
             )
-
         self._apply_domain()
 
     def _apply_domain(self) -> None:
@@ -153,7 +142,6 @@ class DiffDriveLidarPybulletEnv(gym.Env):
         self._physics_dt = self._control_dt / max(1, self.domain.physics_substeps)
         if self._cid is not None:
             p.setTimeStep(self._physics_dt, physicsClientId=self._cid)
-            # Lateral friction on robot base (approx MuJoCo friction scale).
             p.changeDynamics(
                 self._robot_id,
                 -1,
@@ -161,14 +149,73 @@ class DiffDriveLidarPybulletEnv(gym.Env):
                 physicsClientId=self._cid,
             )
 
+    def _lidar(self) -> np.ndarray:
+        pos, orn = p.getBasePositionAndOrientation(
+            self._robot_id, physicsClientId=self._cid
+        )
+        yaw = float(p.getEulerFromQuaternion(orn)[2])
+        origin = np.array(
+            [float(pos[0]), float(pos[1]), float(pos[2]) + 0.12], dtype=np.float64
+        )
+        ranges: list[float] = []
+        for deg in LIDAR_ANGLES_DEG:
+            ang = yaw + np.deg2rad(deg)
+            direction = np.array([np.cos(ang), np.sin(ang), 0.0], dtype=np.float64)
+            end = origin + direction * LIDAR_MAX
+            hits = p.rayTest(origin.tolist(), end.tolist(), physicsClientId=self._cid)
+            hit = hits[0]
+            uid, _link, frac, _hit_pos, _normal = hit
+            if uid < 0 or frac >= 1.0 - 1e-9 or uid == self._robot_id:
+                dist = LIDAR_MAX
+            else:
+                dist = float(frac) * LIDAR_MAX
+            dist = float(np.clip(dist, 0.0, LIDAR_MAX))
+            if self.domain.sensor_noise_std > 0:
+                dist += float(self.np_random.normal(0.0, self.domain.sensor_noise_std))
+                dist = float(np.clip(dist, 0.0, LIDAR_MAX))
+            ranges.append(dist)
+        return np.asarray(ranges, dtype=np.float32)
+
+    def _pack(self, ranges: np.ndarray, forward_speed: float) -> tuple[np.ndarray, dict]:
+        pos, orn = p.getBasePositionAndOrientation(
+            self._robot_id, physicsClientId=self._cid
+        )
+        yaw = float(p.getEulerFromQuaternion(orn)[2])
+        extra = enrich_task_info(
+            self.task.name,
+            self.task.meta,
+            position=pos,
+            yaw=yaw,
+            ranges=ranges,
+            forward_speed=forward_speed,
+            path_s=self._path_s,
+        )
+        obs = build_observation(self.task.name, ranges, extra["rel_goal"])
+        info = {
+            "ranges": ranges.copy(),
+            "position": np.asarray(pos, dtype=np.float64),
+            "forward_speed": forward_speed,
+            "steps": self._steps,
+            "control_hz": self.domain.control_hz,
+            "physics_substeps": self.domain.physics_substeps,
+            "control_dt": self._control_dt,
+            "physics_dt": self._physics_dt,
+            **extra,
+        }
+        return obs.astype(np.float32), info
+
     def reset(self, *, seed: int | None = None, options: dict | None = None):
         super().reset(seed=seed)
-        y = float(self.np_random.uniform(-0.25, 0.25))
-        yaw = float(self.np_random.uniform(-0.2, 0.2))
+        layout = self._layout
+        y = float(self.np_random.uniform(-layout.spawn_noise_y, layout.spawn_noise_y))
+        yaw = float(
+            layout.spawn_yaw
+            + self.np_random.uniform(-layout.spawn_noise_yaw, layout.spawn_noise_yaw)
+        )
         orn = p.getQuaternionFromEuler([0.0, 0.0, yaw])
         p.resetBasePositionAndOrientation(
             self._robot_id,
-            [0.3, y, 0.05],
+            [layout.spawn_xy[0], layout.spawn_xy[1] + y, 0.05],
             orn,
             physicsClientId=self._cid,
         )
@@ -180,8 +227,10 @@ class DiffDriveLidarPybulletEnv(gym.Env):
             p.resetJointState(self._robot_id, j, 0.0, 0.0, physicsClientId=self._cid)
         self._steps = 0
         self._success_streak = 0
-        obs = self._get_obs()
-        return obs, {"ranges": obs.copy()}
+        self._path_s = 0.0
+        ranges = self._lidar()
+        obs, info = self._pack(ranges, 0.0)
+        return obs, info
 
     def step(self, action):
         action = np.asarray(action, dtype=np.float64).reshape(-1)
@@ -207,11 +256,8 @@ class DiffDriveLidarPybulletEnv(gym.Env):
         p.resetBaseVelocity(
             self._robot_id, [0, 0, 0], [0, 0, 0], physicsClientId=self._cid
         )
-
-        # Advance physics_substeps at physics_dt for timestep honesty / contacts.
         for _ in range(max(1, self.domain.physics_substeps)):
             p.stepSimulation(physicsClientId=self._cid)
-        # Re-assert kinematic pose (stepSimulation may nudge free base).
         p.resetBasePositionAndOrientation(
             self._robot_id,
             [x, y, 0.05],
@@ -219,59 +265,23 @@ class DiffDriveLidarPybulletEnv(gym.Env):
             physicsClientId=self._cid,
         )
 
+        if self.task.name == "figure8_tracking":
+            scale = float(self.task.meta.get("path_scale", 1.6))
+            self._path_s += (abs(v) * dt) / max(0.2, scale)
+
         self._steps += 1
-        obs = self._get_obs()
-        pos_now, _ = p.getBasePositionAndOrientation(
-            self._robot_id, physicsClientId=self._cid
-        )
-        info = {
-            "ranges": obs.copy(),
-            "position": np.asarray(pos_now, dtype=np.float64),
-            "forward_speed": v,
-            "steps": self._steps,
-            "control_hz": self.domain.control_hz,
-            "physics_substeps": self.domain.physics_substeps,
-            "control_dt": self._control_dt,
-            "physics_dt": self._physics_dt,
-        }
+        ranges = self._lidar()
+        obs, info = self._pack(ranges, v)
         reward = float(self.task.reward(info)) if self.task.reward else 0.0
-        terminated = bool(self.task.termination(info)) if self.task.termination else False
-        truncated = self._steps >= self.task.max_steps
         if self.task.success and self.task.success(info):
             self._success_streak += 1
         else:
             self._success_streak = 0
         info["success"] = self._success_streak >= 20
         info["is_success"] = info["success"]
+        terminated = bool(self.task.termination(info)) if self.task.termination else False
+        truncated = self._steps >= self.task.max_steps
         return obs, reward, terminated, truncated, info
-
-    def _get_obs(self) -> np.ndarray:
-        pos, orn = p.getBasePositionAndOrientation(
-            self._robot_id, physicsClientId=self._cid
-        )
-        yaw = float(p.getEulerFromQuaternion(orn)[2])
-        origin = np.array(
-            [float(pos[0]), float(pos[1]), float(pos[2]) + 0.12], dtype=np.float64
-        )
-        ranges: list[float] = []
-        for deg in LIDAR_ANGLES_DEG:
-            ang = yaw + np.deg2rad(deg)
-            direction = np.array([np.cos(ang), np.sin(ang), 0.0], dtype=np.float64)
-            end = origin + direction * LIDAR_MAX
-            hits = p.rayTest(origin.tolist(), end.tolist(), physicsClientId=self._cid)
-            hit = hits[0]
-            uid, _link, frac, _hit_pos, _normal = hit
-            # Miss or self-hit → max range (parity with MuJoCo geom-group filter).
-            if uid < 0 or frac >= 1.0 - 1e-9 or uid == self._robot_id:
-                dist = LIDAR_MAX
-            else:
-                dist = float(frac) * LIDAR_MAX
-            dist = float(np.clip(dist, 0.0, LIDAR_MAX))
-            if self.domain.sensor_noise_std > 0:
-                dist += float(self.np_random.normal(0.0, self.domain.sensor_noise_std))
-                dist = float(np.clip(dist, 0.0, LIDAR_MAX))
-            ranges.append(dist)
-        return np.asarray(ranges, dtype=np.float32)
 
     def render(self):
         if self.render_mode != "rgb_array":
@@ -356,4 +366,4 @@ class PybulletAdapter(SimAdapter):
         return frame
 
     def capabilities(self) -> set[str]:
-        return {"urdf", "rayTest", "tiny_renderer", "direct", "headless"}
+        return {"urdf", "rayTest", "tiny_renderer", "direct", "headless", "multi_task"}
