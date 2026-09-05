@@ -55,3 +55,6 @@ STATUS.md
 
 # uv
 uv.lock.bak
+
+# Local scratch (agents / one-off scripts) — keeps RunPod git gate clean
+tmp/
