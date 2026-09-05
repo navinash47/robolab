@@ -97,9 +97,16 @@ def on_startup() -> None:
     create_db_and_tables()
 
 @app.get("/api/experiments")
-def list_experiments(session: SessionDep) -> list[Experiment]:
-    return list(session.exec(select(Experiment)).all())
+def list_experiments(session: SessionDep) -> dict:
+    rows = list(session.exec(select(Experiment)).all())
+    return {
+        "experiments": [{"id": r.id, "name": r.name} for r in rows],
+        "count": len(rows),
+    }
 ```
+
+Phase 0 response is always `{"experiments": [], "count": 0}` (no seed rows).
+
 
 Notes from docs:
 
@@ -118,12 +125,12 @@ No extra dotenv package. `make dev` runs the API via `uv run --env-file .env` (f
 import os
 
 def get_budget() -> dict[str, float]:
-    cap = float(os.getenv("BUDGET_USD_CAP", "50"))
-    spent = 0.0  # Phase 0: no cost ledger yet
+    cap = float(os.environ.get("BUDGET_USD_CAP", "100"))
+    month_spend = 0.0  # Phase 0: no cost ledger yet
     return {
-        "cap_usd": cap,
-        "spent_usd": spent,
-        "remaining_usd": cap - spent,
+        "budget_usd_cap": cap,
+        "month_spend_usd": month_spend,
+        "remaining_usd": cap - month_spend,
     }
 ```
 
