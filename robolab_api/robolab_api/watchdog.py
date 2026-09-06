@@ -25,6 +25,8 @@ from robolab_api.db import CostLedger, Pod, Run, engine
 logger = logging.getLogger("robolab.watchdog")
 
 STALE_HEARTBEAT_SEC = 10 * 60
+# PROVISIONING + null pod_id (create never finished / API crash mid-launch).
+STUCK_PROVISIONING_SEC = int(float(os.environ.get("STUCK_PROVISIONING_SEC", str(10 * 60))))
 WATCHDOG_INTERVAL_SEC = 60
 # Missed heartbeats / list_pods absences before acting (env override).
 CONSECUTIVE_MISS_THRESHOLD = max(
@@ -96,6 +98,32 @@ def classify_remote_pod_status(pod: dict[str, Any] | None) -> str:
     if desired:
         return "OTHER"
     return "MISSING"
+
+
+
+def decide_stuck_provisioning(
+    *,
+    status: str,
+    pod_id: str | None,
+    age_sec: float | None,
+    stuck_sec: float | None = None,
+) -> KillDecision:
+    """Fail runs left PROVISIONING with no pod_id past the stuck threshold."""
+    limit = float(STUCK_PROVISIONING_SEC if stuck_sec is None else stuck_sec)
+    if status != RunStatus.PROVISIONING.value:
+        return KillDecision(False)
+    if pod_id:
+        return KillDecision(False)
+    if age_sec is None or age_sec < limit:
+        return KillDecision(False)
+    return KillDecision(
+        False,
+        reason=(
+            f"Stuck PROVISIONING {age_sec/60:.1f}min with null pod_id "
+            f"(launch never allocated a RunPod). Cleared for retry."
+        ),
+        mark_failed=True,
+    )
 
 
 def decide_stale_heartbeat(
@@ -376,6 +404,37 @@ def _mark_run_failed_pod_gone(
     _absent_misses.pop(pod_row.id, None)
 
 
+
+def sweep_stuck_provisioning(session: Session, *, now: datetime | None = None) -> list[str]:
+    """Fail PROVISIONING runs with null pod_id past STUCK_PROVISIONING_SEC."""
+    actions: list[str] = []
+    now = now or datetime.now(timezone.utc)
+    for run in session.exec(select(Run)).all():
+        created = _aware(run.created_at) or _aware(run.updated_at)
+        age = (now - created).total_seconds() if created else None
+        decision = decide_stuck_provisioning(
+            status=run.status,
+            pod_id=run.pod_id,
+            age_sec=age,
+        )
+        if not decision.mark_failed:
+            continue
+        run.status = RunStatus.FAILED.value
+        run.error = decision.reason
+        run.updated_at = now
+        session.add(run)
+        try:
+            from robolab_api.failures import record_logistics_from_run
+
+            record_logistics_from_run(session, run)
+        except Exception:
+            logger.exception("logistics record failed for stuck %s", run.id)
+        session.commit()
+        actions.append(f"{run.id}:stuck_provisioning_no_pod")
+        logger.warning("watchdog %s", decision.reason)
+    return actions
+
+
 def sweep_once() -> list[str]:
     """One watchdog pass. Returns list of kill / fail / warn reasons applied."""
     actions: list[str] = []
@@ -383,6 +442,8 @@ def sweep_once() -> list[str]:
     miss_threshold = consecutive_miss_threshold()
     api_key = (os.environ.get("RUNPOD_API_KEY") or "").strip()
     if not api_key:
+        with Session(engine) as session:
+            actions.extend(sweep_stuck_provisioning(session))
         return actions
 
     try:
@@ -395,11 +456,14 @@ def sweep_once() -> list[str]:
         live = list_pods()
     except Exception as exc:
         logger.error("list_pods failed: %s", exc)
+        with Session(engine) as session:
+            actions.extend(sweep_stuck_provisioning(session))
         return actions
 
     with Session(engine) as session:
         known_runs = {r.id: r for r in session.exec(select(Run)).all()}
         now = datetime.now(timezone.utc)
+        actions.extend(sweep_stuck_provisioning(session, now=now))
 
         # Track which DB pods are still live
         live_ids = {str(p.get("id")) for p in live if p.get("id")}

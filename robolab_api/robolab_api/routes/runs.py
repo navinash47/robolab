@@ -303,14 +303,26 @@ def create_run(body: RunConfig, session: SessionDep) -> dict:
         )
         row.config_json = body.model_dump_json()
 
-    row.status = RunStatus.PROVISIONING.value
-    row.updated_at = datetime.now(timezone.utc)
-    session.add(row)
-    session.commit()
-
+    # Stay QUEUED until create_pod returns a pod_id. Committing PROVISIONING
+    # before launch made the dashboard look "stuck" forever when create hung
+    # or the API died mid-flight (null pod_id, no RunPod object).
     public = (os.environ.get("BACKEND_PUBLIC_URL") or "").strip()
+    launch_timeout = float(os.environ.get("RUNPOD_LAUNCH_TIMEOUT_SEC", "180"))
     try:
-        result = launch_runpod(body, run_id, backend_public_url=public or None)
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            fut = pool.submit(
+                launch_runpod, body, run_id, backend_public_url=public or None
+            )
+            try:
+                result = fut.result(timeout=launch_timeout)
+            except FuturesTimeout as exc:
+                raise TimeoutError(
+                    f"RunPod launch timed out after {launch_timeout:.0f}s "
+                    f"(capacity loop / API hang). Retry with Best available or "
+                    f"another GPU; check Failure Resolution."
+                ) from exc
     except RunPodConfigError as exc:
         row.status = RunStatus.FAILED.value
         row.error = str(exc)

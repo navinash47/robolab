@@ -7,6 +7,7 @@ from robolab_api.watchdog import (
     decide_kill,
     decide_pod_absent,
     decide_stale_heartbeat,
+    decide_stuck_provisioning,
 )
 
 
@@ -187,3 +188,35 @@ def test_classify_remote_pod_status() -> None:
     assert classify_remote_pod_status({"desiredStatus": "RUNNING"}) == "RUNNING"
     assert classify_remote_pod_status({"desiredStatus": "EXITED"}) == "EXITED"
     assert classify_remote_pod_status({"runtime": {"uptimeInSeconds": 10}}) == "RUNNING"
+
+
+def test_stuck_provisioning_null_pod_marks_failed() -> None:
+    d = decide_stuck_provisioning(
+        status="PROVISIONING",
+        pod_id=None,
+        age_sec=11 * 60,
+        stuck_sec=10 * 60,
+    )
+    assert d.mark_failed
+    assert not d.should_kill
+    assert "null pod_id" in d.reason
+
+
+def test_stuck_provisioning_with_pod_ignored() -> None:
+    d = decide_stuck_provisioning(
+        status="PROVISIONING",
+        pod_id="abc",
+        age_sec=30 * 60,
+        stuck_sec=10 * 60,
+    )
+    assert not d.mark_failed
+
+
+def test_stuck_provisioning_young_ignored() -> None:
+    d = decide_stuck_provisioning(
+        status="PROVISIONING",
+        pod_id=None,
+        age_sec=60,
+        stuck_sec=10 * 60,
+    )
+    assert not d.mark_failed
