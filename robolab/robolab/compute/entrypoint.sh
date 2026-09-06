@@ -196,12 +196,23 @@ if [[ "${SIM_NAME}" == "genesis" || "${ROBOLAB_INSTALL_GENESIS:-}" == "1" ]]; th
       fi
     fi
   fi
-  if ! "${VENV_PY}" -c "import genesis" 2>/tmp/robolab-genesis-import.err; then
-    tail -c 800 /tmp/robolab-genesis-import.err > /tmp/robolab-genesis-import.tail || true
+  # Torch/genesis emit FutureWarnings on stderr; never treat warnings as errors here.
+  export PYTHONWARNINGS="${PYTHONWARNINGS:-ignore}"
+  if ! "${VENV_PY}" -W ignore -c "import warnings; warnings.filterwarnings('ignore'); import genesis; print('genesis_ok')" \
+      >/tmp/robolab-genesis-import.out 2>/tmp/robolab-genesis-import.err; then
+    {
+      echo '--- import stdout (head) ---'
+      head -c 400 /tmp/robolab-genesis-import.out 2>/dev/null || true
+      echo
+      echo '--- import stderr (head+tail) ---'
+      head -c 500 /tmp/robolab-genesis-import.err 2>/dev/null || true
+      echo
+      tail -c 500 /tmp/robolab-genesis-import.err 2>/dev/null || true
+    } > /tmp/robolab-genesis-import.tail 2>/dev/null || true
     report_fail "genesis-world installed but import genesis failed: $(tr '\n' ' ' </tmp/robolab-genesis-import.tail | tr -cd '[:print:] ')"
     exit 1
   fi
-  log "genesis import OK"
+  log "genesis import OK ($(tr '\n' ' ' </tmp/robolab-genesis-import.out | tr -cd '[:print:] '))"
 fi
 if [[ "${SIM_NAME}" == "isaaclab" || "${SIM_NAME}" == "isaac_sim" ]]; then
   # Full Omniverse bake is optional. :isaac image sets ROBOLAB_ISAAC_MODE=thin for
