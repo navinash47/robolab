@@ -2,6 +2,10 @@
 
 Every ~60s: terminate pods that violate safety rules and label runs
 KILLED_BY_WATCHDOG. Orphan sweep on startup.
+
+Stale heartbeats / list_pods gaps require N consecutive observations plus a
+RunPod get_pod confirm before any kill or "pod vanished" failure — avoids
+false orphans from a single flaky API/tunnel tick.
 """
 
 from __future__ import annotations
@@ -11,7 +15,7 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from sqlmodel import Session, select
 
@@ -22,12 +26,40 @@ logger = logging.getLogger("robolab.watchdog")
 
 STALE_HEARTBEAT_SEC = 10 * 60
 WATCHDOG_INTERVAL_SEC = 60
+# Missed heartbeats / list_pods absences before acting (env override).
+CONSECUTIVE_MISS_THRESHOLD = max(
+    1, int(float(os.environ.get("WATCHDOG_CONSECUTIVE_MISSES", "3")))
+)
+
+# In-process counters — reset on API restart (extra grace; safer than false kill).
+_stale_misses: dict[str, int] = {}
+_absent_misses: dict[str, int] = {}
+
+RemoteAction = Literal["none", "warn", "kill", "mark_failed"]
 
 
 @dataclass
 class KillDecision:
     should_kill: bool
     reason: str = ""
+    # When True, mark run FAILED (logistics) without calling terminate_pod.
+    mark_failed: bool = False
+    # Soft miss: log only; do not kill or fail.
+    warn_only: bool = False
+
+    @property
+    def action(self) -> RemoteAction:
+        if self.should_kill:
+            return "kill"
+        if self.mark_failed:
+            return "mark_failed"
+        if self.warn_only:
+            return "warn"
+        return "none"
+
+
+def consecutive_miss_threshold() -> int:
+    return max(1, int(float(os.environ.get("WATCHDOG_CONSECUTIVE_MISSES", "3"))))
 
 
 def accrued_from_rate(
@@ -44,6 +76,113 @@ def accrued_from_rate(
     return round(float(hourly_rate) * hours, 6)
 
 
+def classify_remote_pod_status(pod: dict[str, Any] | None) -> str:
+    """Normalize RunPod get_pod / list_pods shape → RUNNING|EXITED|TERMINATED|MISSING|OTHER."""
+    if not pod:
+        return "MISSING"
+    desired = str(pod.get("desiredStatus") or pod.get("desired_status") or "").upper()
+    # Some payloads nest status under runtime / machine.
+    if not desired:
+        desired = str(pod.get("status") or "").upper()
+    if desired in {"RUNNING", "EXITED", "TERMINATED", "DEAD", "STOPPED"}:
+        if desired == "DEAD":
+            return "TERMINATED"
+        if desired == "STOPPED":
+            return "EXITED"
+        return desired
+    # Runtime present without desiredStatus usually means the machine is up.
+    if pod.get("runtime") and desired in {"", "UNKNOWN"}:
+        return "RUNNING"
+    if desired:
+        return "OTHER"
+    return "MISSING"
+
+
+def decide_stale_heartbeat(
+    *,
+    heartbeat_age_sec: float | None,
+    consecutive_stale_misses: int,
+    pod_remote_status: str | None,
+    stale_sec: float = STALE_HEARTBEAT_SEC,
+    miss_threshold: int | None = None,
+) -> KillDecision:
+    """Policy for stale trainer heartbeats (unit-testable).
+
+    A single stale observation never kills. After N consecutive misses, confirm
+    via RunPod status: already gone → mark_failed; still RUNNING → warn/grace.
+    """
+    threshold = miss_threshold if miss_threshold is not None else consecutive_miss_threshold()
+    if heartbeat_age_sec is None or heartbeat_age_sec <= stale_sec:
+        return KillDecision(False)
+
+    if consecutive_stale_misses < threshold:
+        return KillDecision(
+            False,
+            f"stale heartbeat grace ({consecutive_stale_misses}/{threshold}, "
+            f"age={heartbeat_age_sec:.0f}s)",
+            warn_only=True,
+        )
+
+    status = (pod_remote_status or "MISSING").upper()
+    if status in {"MISSING", "EXITED", "TERMINATED"}:
+        return KillDecision(
+            False,
+            f"pod already {status.lower()} after {consecutive_stale_misses} stale "
+            f"heartbeats (age={heartbeat_age_sec:.0f}s) — marking FAILED without kill",
+            mark_failed=True,
+        )
+    if status == "RUNNING":
+        return KillDecision(
+            False,
+            f"stale heartbeat ({heartbeat_age_sec:.0f}s) but RunPod says RUNNING — "
+            "extending grace (no terminate)",
+            warn_only=True,
+        )
+    # Unusual remote status after N misses: still prefer mark_failed over blind kill
+    # when we cannot confirm a live billable machine.
+    if status == "OTHER":
+        return KillDecision(
+            False,
+            f"stale heartbeat + unclear pod status {status} — extending grace",
+            warn_only=True,
+        )
+    return KillDecision(False, warn_only=True)
+
+
+def decide_pod_absent(
+    *,
+    consecutive_absent: int,
+    pod_remote_status: str | None,
+    miss_threshold: int | None = None,
+) -> KillDecision:
+    """Policy when a DB pod is missing from list_pods (unit-testable)."""
+    threshold = miss_threshold if miss_threshold is not None else consecutive_miss_threshold()
+    if consecutive_absent < threshold:
+        return KillDecision(
+            False,
+            f"list_pods absence grace ({consecutive_absent}/{threshold})",
+            warn_only=True,
+        )
+    status = (pod_remote_status or "MISSING").upper()
+    if status == "RUNNING":
+        return KillDecision(
+            False,
+            "pod missing from list_pods but get_pod says RUNNING — not marking vanished",
+            warn_only=True,
+        )
+    if status in {"MISSING", "EXITED", "TERMINATED"}:
+        return KillDecision(
+            False,
+            f"pod confirmed {status.lower()} after {consecutive_absent} list_pods misses",
+            mark_failed=True,
+        )
+    return KillDecision(
+        False,
+        f"pod absent + unclear status {status} — extending grace",
+        warn_only=True,
+    )
+
+
 def decide_kill(
     *,
     run_id: str | None,
@@ -53,17 +192,19 @@ def decide_kill(
     max_runtime_min: float,
     accrued_usd: float,
     budget_usd: float,
+    consecutive_stale_misses: int = 0,
+    pod_remote_status: str | None = None,
+    miss_threshold: int | None = None,
 ) -> KillDecision:
-    """Pure kill policy (unit-testable)."""
+    """Pure kill policy (unit-testable).
+
+    Budget / runtime / unknown RUN_ID still kill immediately.
+    Stale heartbeats defer to decide_stale_heartbeat (N misses + RunPod confirm).
+    """
     if not run_id:
         return KillDecision(True, "pod missing RUN_ID env")
     if not run_known:
         return KillDecision(True, f"unknown RUN_ID {run_id}")
-    if heartbeat_age_sec is not None and heartbeat_age_sec > STALE_HEARTBEAT_SEC:
-        return KillDecision(
-            True,
-            f"stale heartbeat ({heartbeat_age_sec:.0f}s > {STALE_HEARTBEAT_SEC}s)",
-        )
     if runtime_min > max_runtime_min:
         return KillDecision(
             True,
@@ -74,7 +215,12 @@ def decide_kill(
             True,
             f"accrued ${accrued_usd:.4f} > budget_usd ${budget_usd:.4f}",
         )
-    return KillDecision(False)
+    return decide_stale_heartbeat(
+        heartbeat_age_sec=heartbeat_age_sec,
+        consecutive_stale_misses=consecutive_stale_misses,
+        pod_remote_status=pod_remote_status,
+        miss_threshold=miss_threshold,
+    )
 
 
 def _env_from_pod(pod: dict[str, Any]) -> dict[str, str]:
@@ -142,6 +288,18 @@ def finalize_cost(
     return accrued
 
 
+def _confirm_pod_status(pod_id: str) -> str:
+    """Best-effort get_pod classification; MISSING on any failure."""
+    try:
+        from robolab.compute.runpod import get_pod
+
+        remote = get_pod(pod_id)
+        return classify_remote_pod_status(remote)
+    except Exception as exc:
+        logger.warning("get_pod(%s) confirm failed: %s", pod_id, exc)
+        return "MISSING"
+
+
 def _kill_run(
     session: Session,
     run: Run | None,
@@ -176,12 +334,53 @@ def _kill_run(
         except Exception:
             logger.exception("failed to record logistics failure for %s", run.id)
     session.commit()
+    _stale_misses.pop(pod_id, None)
+    _absent_misses.pop(pod_id, None)
+
+
+def _mark_run_failed_pod_gone(
+    session: Session,
+    run: Run,
+    pod_row: Pod,
+    reason: str,
+) -> None:
+    """Pod already dead on RunPod — settle cost + FAILED logistics, no terminate."""
+    now = datetime.now(timezone.utc)
+    logger.warning(
+        "watchdog marking FAILED (no terminate) pod=%s run=%s reason=%s",
+        pod_row.id,
+        run.id,
+        reason,
+    )
+    pod_row.status = "TERMINATED"
+    pod_row.terminated_at = now
+    session.add(pod_row)
+    if run.status in {
+        RunStatus.PROVISIONING.value,
+        RunStatus.RUNNING.value,
+        RunStatus.QUEUED.value,
+    }:
+        run.status = RunStatus.FAILED.value
+        run.error = reason
+        run.updated_at = now
+        finalize_cost(session, run, pod_row, reason="fail:pod_gone")
+        session.add(run)
+        try:
+            from robolab_api.failures import record_logistics_from_run
+
+            record_logistics_from_run(session, run)
+        except Exception:
+            logger.exception("failed to record logistics failure for %s", run.id)
+    session.commit()
+    _stale_misses.pop(pod_row.id, None)
+    _absent_misses.pop(pod_row.id, None)
 
 
 def sweep_once() -> list[str]:
-    """One watchdog pass. Returns list of kill reasons applied."""
+    """One watchdog pass. Returns list of kill / fail / warn reasons applied."""
     actions: list[str] = []
     max_runtime = float(os.environ.get("MAX_RUNTIME_MIN", "120"))
+    miss_threshold = consecutive_miss_threshold()
     api_key = (os.environ.get("RUNPOD_API_KEY") or "").strip()
     if not api_key:
         return actions
@@ -219,6 +418,9 @@ def sweep_once() -> list[str]:
                 run_id = (pod_row.run_id or "").strip() or None
             run = known_runs.get(run_id) if run_id else None
 
+            # Seen in list_pods → clear absence counter.
+            _absent_misses.pop(pod_id, None)
+
             # Accrue cost for known runpod runs
             if run and run.compute == "runpod":
                 rate = float(
@@ -251,8 +453,26 @@ def sweep_once() -> list[str]:
                 # pull + uv sync; still enforce MAX_RUNTIME_MIN / budget.
                 if run.status == RunStatus.PROVISIONING.value:
                     hb_age_for_kill = None
+                    _stale_misses.pop(pod_id, None)
                 else:
                     hb_age_for_kill = hb_age
+                    if hb_age is not None and hb_age > STALE_HEARTBEAT_SEC:
+                        _stale_misses[pod_id] = _stale_misses.get(pod_id, 0) + 1
+                    else:
+                        _stale_misses.pop(pod_id, None)
+
+                consecutive = _stale_misses.get(pod_id, 0)
+                remote_status: str | None = None
+                # Only hit get_pod when we are at/over the miss threshold for stale HB.
+                if (
+                    hb_age_for_kill is not None
+                    and hb_age_for_kill > STALE_HEARTBEAT_SEC
+                    and consecutive >= miss_threshold
+                ):
+                    remote_status = classify_remote_pod_status(remote)
+                    # Prefer fresh get_pod if list row looks odd.
+                    if remote_status != "RUNNING":
+                        remote_status = _confirm_pod_status(pod_id)
 
                 runtime_min = (now - started).total_seconds() / 60.0
                 decision = decide_kill(
@@ -263,7 +483,24 @@ def sweep_once() -> list[str]:
                     max_runtime_min=max_runtime,
                     accrued_usd=accrued,
                     budget_usd=float(run.budget_usd or 0.0),
+                    consecutive_stale_misses=consecutive,
+                    pod_remote_status=remote_status,
+                    miss_threshold=miss_threshold,
                 )
+                # Healthy RUNNING after threshold → reset miss streak (extend grace).
+                if (
+                    decision.warn_only
+                    and remote_status == "RUNNING"
+                    and consecutive >= miss_threshold
+                ):
+                    _stale_misses.pop(pod_id, None)
+                    logger.warning(
+                        "watchdog grace: pod=%s run=%s %s",
+                        pod_id,
+                        run.id,
+                        decision.reason,
+                    )
+                    actions.append(f"{pod_id}:warn:{decision.reason}")
             elif pod_row is not None and run_id:
                 # DB knows the pod but run row missing / non-runpod — do not kill.
                 decision = KillDecision(False)
@@ -291,47 +528,76 @@ def sweep_once() -> list[str]:
             if decision.should_kill:
                 _kill_run(session, run, pod_id, decision.reason)
                 actions.append(f"{pod_id}:{decision.reason}")
+            elif decision.mark_failed and run is not None and pod_row is not None:
+                _mark_run_failed_pod_gone(session, run, pod_row, decision.reason)
+                actions.append(f"{pod_id}:mark_failed:{decision.reason}")
+            elif decision.warn_only and decision.reason:
+                # RUNNING-at-threshold path already appended; avoid duplicates.
+                tag = f"{pod_id}:warn:{decision.reason}"
+                if tag not in actions:
+                    logger.info("watchdog warn pod=%s %s", pod_id, decision.reason)
+                    actions.append(tag)
 
-        # DB pods marked live but gone from API
+        # DB pods marked live but gone from list_pods — require N consecutive + confirm.
         for pod_row in session.exec(select(Pod).where(Pod.terminated_at.is_(None))).all():
-            if pod_row.id not in live_ids:
+            if pod_row.id in live_ids:
+                continue
+            _absent_misses[pod_row.id] = _absent_misses.get(pod_row.id, 0) + 1
+            consecutive = _absent_misses[pod_row.id]
+            remote_status: str | None = None
+            if consecutive >= miss_threshold:
+                remote_status = _confirm_pod_status(pod_row.id)
+            decision = decide_pod_absent(
+                consecutive_absent=consecutive,
+                pod_remote_status=remote_status,
+                miss_threshold=miss_threshold,
+            )
+            if decision.warn_only:
+                logger.warning(
+                    "watchdog: pod=%s absent from list_pods (%s)",
+                    pod_row.id,
+                    decision.reason,
+                )
+                if remote_status == "RUNNING":
+                    # Flaky list — reset absence streak.
+                    _absent_misses.pop(pod_row.id, None)
+                actions.append(f"{pod_row.id}:warn:{decision.reason}")
+                continue
+            if not decision.mark_failed:
+                continue
+
+            run = session.get(Run, pod_row.run_id)
+            if run and run.status in {
+                RunStatus.PROVISIONING.value,
+                RunStatus.RUNNING.value,
+                RunStatus.QUEUED.value,
+            }:
+                reason = (
+                    run.error
+                    or "Pod disappeared from RunPod before the trainer finished "
+                    "(entrypoint crash, self-terminate, or machine reclaim). "
+                    f"Confirmed after {consecutive} consecutive list_pods misses "
+                    f"(status={remote_status})."
+                )
+                _mark_run_failed_pod_gone(session, run, pod_row, reason)
+                actions.append(f"{pod_row.id}:pod_vanished")
+            else:
+                # No active run — just close the pod row.
                 pod_row.status = "TERMINATED"
                 pod_row.terminated_at = now
                 session.add(pod_row)
-                run = session.get(Run, pod_row.run_id)
-                if run and run.status in {
-                    RunStatus.PROVISIONING.value,
-                    RunStatus.RUNNING.value,
-                    RunStatus.QUEUED.value,
-                }:
-                    # Pod vanished without complete/fail callback — surface clearly.
-                    if run.status != RunStatus.KILLED_BY_WATCHDOG.value:
-                        run.status = RunStatus.FAILED.value
-                        run.error = (
-                            run.error
-                            or "Pod disappeared from RunPod before the trainer finished "
-                            "(watchdog kill, entrypoint crash, or machine reclaim). "
-                            "Check worker logs / image / git clone."
-                        )
-                        run.updated_at = now
-                        finalize_cost(session, run, pod_row, reason="fail:pod_vanished")
-                        session.add(run)
-                        try:
-                            from robolab_api.failures import record_logistics_from_run
-
-                            record_logistics_from_run(session, run)
-                        except Exception:
-                            logger.exception(
-                                "failed to record logistics failure for %s", run.id
-                            )
-                        actions.append(f"{pod_row.id}:pod_vanished")
                 session.commit()
+                _absent_misses.pop(pod_row.id, None)
         session.commit()
     return actions
 
 
 async def watchdog_loop(stop: asyncio.Event) -> None:
-    logger.info("watchdog started (interval=%ss)", WATCHDOG_INTERVAL_SEC)
+    logger.info(
+        "watchdog started (interval=%ss, consecutive_misses=%s)",
+        WATCHDOG_INTERVAL_SEC,
+        consecutive_miss_threshold(),
+    )
     # Startup orphan sweep
     try:
         actions = await asyncio.to_thread(sweep_once)

@@ -240,10 +240,12 @@ Override is **not** implemented (cost safety > convenience).
 Every 60s (and orphan sweep on startup):
 
 1. Unknown `RUN_ID` on a live pod → terminate + `KILLED_BY_WATCHDOG`
-2. Heartbeat `updated_at` stale **> 10 minutes** → terminate + kill label (skipped while still `PROVISIONING`)
+2. Heartbeat `updated_at` stale **> 10 minutes** for **N consecutive** sweeps (`WATCHDOG_CONSECUTIVE_MISSES`, default **3**) → confirm via RunPod `get_pod`: already EXITED/TERMINATED/MISSING → mark `FAILED` (logistics, **no** terminate); still `RUNNING` → warn + extend grace (**no** kill). Budget / `MAX_RUNTIME_MIN` still kill immediately.
 3. Runtime **> `MAX_RUNTIME_MIN`** → terminate + kill label
 4. Accrued cost **> run `budget_usd`** (when `budget_usd > 0`) → terminate + kill label
 5. Month `CostLedger` sum ≥ `BUDGET_USD_CAP` → **refuse new launches**
+6. DB pod missing from `list_pods` → same N-miss + `get_pod` confirm before `pod_vanished` FAILED (avoids false orphans from a flaky list tick)
+7. Launch preflight: `GET $BACKEND_PUBLIC_URL/health` must be 200 (refuse + logistics); if `/tmp/robolab-cloudflared.log` shows a different tunnel and health fails, error includes that hint
 
 ## Status machine (Phase 3 addition)
 

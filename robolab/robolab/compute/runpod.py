@@ -6,17 +6,33 @@ Signatures follow current runpod-python + REST docs (see docs/PHASE_3_APIS.md).
 from __future__ import annotations
 
 import base64
+import logging
 import os
+import re
 import subprocess
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 
 from robolab.compute.local import repo_root, write_run_config
 from robolab.core.run import RunConfig
 
+logger = logging.getLogger("robolab.runpod")
+
+_TUNNEL_URL_RE = re.compile(
+    r"https://[a-z0-9-]+\.(?:trycloudflare\.com|lhr\.life|loca\.lt|ngrok-free\.app|ngrok\.io)",
+    re.IGNORECASE,
+)
+_CF_LOG_CANDIDATES = (
+    Path("/tmp/robolab-cloudflared.log"),
+    Path("/tmp/cloudflared.log"),
+)
+
 # Prefer mid-tier GPUs that are usually stocked in EU-RO-1 with network volumes.
 # Keep this list cost-safe (no H100/A100/H200 auto-fallback).
+# Order used for UI "Best available" (gpu_type=best) and null/empty gpu_type.
 DEFAULT_GPU_FALLBACKS = [
     "NVIDIA GeForce RTX 4090",
     "NVIDIA GeForce RTX 3090",
@@ -25,6 +41,20 @@ DEFAULT_GPU_FALLBACKS = [
     "NVIDIA RTX A4500",
     "NVIDIA RTX 4000 Ada Generation",
 ]
+
+# Sent from New Run UI when user picks "Best available".
+BEST_AVAILABLE_GPU = "best"
+_BEST_AVAILABLE_ALIASES = frozenset(
+    {BEST_AVAILABLE_GPU, "auto", "any", "best_available"}
+)
+
+
+def _is_best_available(gpu_type: str | None) -> bool:
+    """True when create should walk DEFAULT_GPU_FALLBACKS instead of one GPU."""
+    if gpu_type is None:
+        return True
+    key = gpu_type.strip().lower()
+    return not key or key in _BEST_AVAILABLE_ALIASES
 
 
 def _cloud_type_candidates(preferred: str) -> list[str]:
@@ -63,6 +93,99 @@ def require_runpod_launch_env() -> dict[str, str]:
         "ROBOLAB_GIT_URL": _require_env("ROBOLAB_GIT_URL"),
         "BACKEND_PUBLIC_URL": _require_env("BACKEND_PUBLIC_URL"),
     }
+
+
+def _latest_tunnel_url_from_logs() -> str | None:
+    """Best-effort: pick the newest trycloudflare/lhr URL from keep_dev_alive logs."""
+    found: list[tuple[float, str]] = []
+    for path in _CF_LOG_CANDIDATES:
+        try:
+            if not path.is_file():
+                continue
+            text = path.read_text(errors="ignore")
+            matches = _TUNNEL_URL_RE.findall(text)
+            if not matches:
+                continue
+            found.append((path.stat().st_mtime, matches[-1].rstrip("/")))
+        except OSError:
+            continue
+    if not found:
+        return None
+    found.sort(key=lambda x: x[0], reverse=True)
+    return found[0][1]
+
+
+def preflight_backend_public_url(
+    public_url: str | None = None,
+    *,
+    timeout_sec: float = 8.0,
+) -> str:
+    """Verify BACKEND_PUBLIC_URL /health is reachable before creating a paid pod.
+
+    Also warns when /tmp/robolab-cloudflared.log shows a newer tunnel URL than .env
+    (stale trycloudflare after cloudflared restart — see tmp/keep_dev_alive.sh).
+    Returns the normalized base URL on success; raises RunPodConfigError otherwise.
+    """
+    public = (public_url or os.environ.get("BACKEND_PUBLIC_URL") or "").strip().rstrip("/")
+    if not public:
+        raise RunPodConfigError(
+            "BACKEND_PUBLIC_URL is missing. Start cloudflared "
+            "(`cloudflared tunnel --url http://127.0.0.1:8000` or tmp/keep_dev_alive.sh), "
+            "set BACKEND_PUBLIC_URL in .env, restart `make dev`."
+        )
+    lower = public.lower()
+    if "localhost" in lower or "127.0.0.1" in lower:
+        raise RunPodConfigError(
+            "BACKEND_PUBLIC_URL must be reachable from RunPod (not localhost). "
+            "Use ngrok or Cloudflare Tunnel and set BACKEND_PUBLIC_URL in .env."
+        )
+    if not lower.startswith("https://") and not lower.startswith("http://"):
+        raise RunPodConfigError(
+            f"BACKEND_PUBLIC_URL must be an http(s) URL, got {public!r}."
+        )
+
+    live_tunnel = _latest_tunnel_url_from_logs()
+    if live_tunnel and live_tunnel.rstrip("/") != public:
+        stale_hint = (
+            f" Hint: cloudflared log shows a different tunnel ({live_tunnel}) — "
+            "update BACKEND_PUBLIC_URL in .env and restart the API "
+            "(or re-run tmp/keep_dev_alive.sh) if heartbeats fail."
+        )
+    else:
+        stale_hint = ""
+
+    health = f"{public}/health"
+    req = urllib.request.Request(health, method="GET", headers={"User-Agent": "robolab-preflight"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            code = getattr(resp, "status", None) or resp.getcode()
+            body = resp.read(256)
+    except urllib.error.HTTPError as exc:
+        raise RunPodConfigError(
+            f"BACKEND_PUBLIC_URL preflight failed: GET {health} → HTTP {exc.code}. "
+            "Pods cannot heartbeat if the public tunnel is down."
+            f"{stale_hint}"
+        ) from exc
+    except Exception as exc:
+        raise RunPodConfigError(
+            f"BACKEND_PUBLIC_URL preflight failed: GET {health} unreachable ({exc}). "
+            "Keep `make dev` + cloudflared alive; refresh BACKEND_PUBLIC_URL if the "
+            f"tunnel rotated.{stale_hint}"
+        ) from exc
+
+    if int(code) != 200:
+        raise RunPodConfigError(
+            f"BACKEND_PUBLIC_URL preflight failed: GET {health} → HTTP {code} "
+            f"(body={body[:80]!r}). Expected 200.{stale_hint}"
+        )
+
+    if live_tunnel and live_tunnel.rstrip("/") != public:
+        logger.warning(
+            "BACKEND_PUBLIC_URL=%s differs from cloudflared log %s (health OK — launching)",
+            public,
+            live_tunnel,
+        )
+    return public
 
 
 def worker_image_for_sim(sim: str, default_image: str | None = None) -> str:
@@ -186,9 +309,6 @@ def get_pod(pod_id: str, api_key: str | None = None) -> dict[str, Any] | None:
 
 def terminate_pod(pod_id: str, api_key: str | None = None) -> None:
     """Terminate via REST v2 DELETE; fall back to runpod-python GraphQL."""
-    import urllib.error
-    import urllib.request
-
     key = (api_key or os.environ.get("RUNPOD_API_KEY") or "").strip()
     if not key:
         raise RunPodConfigError("RUNPOD_API_KEY is missing for terminate_pod.")
@@ -249,13 +369,15 @@ def estimate_cost_usd(hourly_rate: float, max_runtime_min: int | None = None) ->
 
 
 def _gpu_candidates(preferred: str | None) -> list[str]:
-    ordered: list[str] = []
-    if preferred:
-        ordered.append(preferred)
-    for g in DEFAULT_GPU_FALLBACKS:
-        if g not in ordered:
-            ordered.append(g)
-    return ordered
+    """Resolve GPU type ids to try for create_pod.
+
+    - best / auto / any / empty / None → DEFAULT_GPU_FALLBACKS (EU-RO-1 cost-safe order)
+    - specific catalog name → that GPU only (capacity miss fails; no silent swap)
+    """
+    if _is_best_available(preferred):
+        return list(DEFAULT_GPU_FALLBACKS)
+    assert preferred is not None
+    return [preferred.strip()]
 
 
 def create_training_pod(
@@ -269,12 +391,8 @@ def create_training_pod(
     env_bundle = env_bundle or require_runpod_launch_env()
     runpod = _configure_sdk(env_bundle["RUNPOD_API_KEY"])
 
-    public = env_bundle["BACKEND_PUBLIC_URL"].rstrip("/")
-    if "localhost" in public or "127.0.0.1" in public:
-        raise RunPodConfigError(
-            "BACKEND_PUBLIC_URL must be reachable from RunPod (not localhost). "
-            "Use ngrok or Cloudflare Tunnel and set BACKEND_PUBLIC_URL in .env."
-        )
+    public = preflight_backend_public_url(env_bundle["BACKEND_PUBLIC_URL"])
+    env_bundle = {**env_bundle, "BACKEND_PUBLIC_URL": public}
 
     # Secure is the reliable default for EU-RO-1 + network volume; Community often
     # returns "no instances available" even when the capacity catalog shows High stock.
@@ -328,10 +446,12 @@ def create_training_pod(
 
     image_name = worker_image_for_sim(sim_key, env_bundle["ROBOLAB_WORKER_IMAGE"])
 
-    preferred = cfg.gpu_type or DEFAULT_GPU_FALLBACKS[0]
+    # UI "Best available" sends gpu_type=best; null/empty also walks the fallback list.
+    preferred = cfg.gpu_type
+    candidates = _gpu_candidates(preferred)
     last_err: Exception | None = None
     attempts: list[str] = []
-    for gpu_type_id in _gpu_candidates(preferred):
+    for gpu_type_id in candidates:
         for cloud_type in _cloud_type_candidates(cloud_pref):
             try:
                 rate_cloud = "SECURE" if cloud_type == "ALL" else cloud_type
@@ -380,11 +500,16 @@ def create_training_pod(
     dc = data_center_id or "any-DC"
     vol = env_bundle["RUNPOD_NETWORK_VOLUME_ID"]
     detail = attempts[-1] if attempts else str(last_err)
+    hint = (
+        "Try GPU type 'Best available', RUNPOD_CLOUD_TYPE=SECURE (or ALL), "
+        "a different GPU, or retry later."
+        if not _is_best_available(preferred)
+        else "Try RUNPOD_CLOUD_TYPE=SECURE (or ALL), or retry later."
+    )
     raise RunPodConfigError(
         f"No RunPod capacity in {dc} (volume {vol}) for "
-        f"GPUs {_gpu_candidates(preferred)} / clouds {_cloud_type_candidates(cloud_pref)}. "
-        f"Last error: {detail}. "
-        f"Try RUNPOD_CLOUD_TYPE=SECURE (or ALL), a different GPU, or retry later."
+        f"GPUs {candidates} / clouds {_cloud_type_candidates(cloud_pref)}. "
+        f"Last error: {detail}. {hint}"
     )
 
 

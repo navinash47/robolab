@@ -29,8 +29,14 @@ def suggest_fix_for_error(error: str | None) -> str | None:
         return "Set RUNPOD_CLOUD_TYPE=SECURE (Community+EU-RO-1 volume often refuses); retry."
     if "budget" in e and ("exhaust" in e or "cap" in e or "refuse" in e):
         return "Raise BUDGET_USD_CAP or wait for next month; check /spend."
-    if "backend_public_url" in e or "localhost" in e and "backend" in e:
-        return "Expose :8000 via cloudflared/ngrok; set BACKEND_PUBLIC_URL (no localhost)."
+    if "backend_public_url" in e or ("localhost" in e and "backend" in e) or "preflight" in e:
+        return (
+            "Expose :8000 via cloudflared/ngrok; set BACKEND_PUBLIC_URL (no localhost); "
+            "confirm GET $BACKEND_PUBLIC_URL/health → 200; refresh .env if tunnel rotated "
+            "(tmp/keep_dev_alive.sh)."
+        )
+    if "stale" in e and "tunnel" in e:
+        return "Update BACKEND_PUBLIC_URL to the live trycloudflare URL; restart API."
     if "wandb" in e and ("401" in e or "unauthorized" in e or "auth" in e):
         return "Replace WANDB_API_KEY at https://wandb.ai/authorize; restart `make dev`."
     if "killed_by_watchdog" in e and "missing run_id" in e:

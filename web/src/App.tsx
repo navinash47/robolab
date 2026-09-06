@@ -185,7 +185,7 @@ export default function App() {
     sim: "mujoco",
     robot: "diffdrive_lidar",
     timesteps: 50_000,
-    gpu_type: "NVIDIA GeForce RTX 4090",
+    gpu_type: "best",
     budget_usd: 0,
   });
   const esRef = useRef<Map<string, EventSource>>(new Map());
@@ -798,6 +798,9 @@ export default function App() {
                           }
                           data-testid="gpu-type-select"
                         >
+                          <option value="best">
+                            Best available (4090→3090→3070→A4000…)
+                          </option>
                           <option value="NVIDIA GeForce RTX 4090">
                             NVIDIA GeForce RTX 4090 (Secure ~$0.34/hr)
                           </option>
