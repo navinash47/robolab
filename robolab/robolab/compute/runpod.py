@@ -188,6 +188,15 @@ def preflight_backend_public_url(
     return public
 
 
+# Sims that cannot reliably render on the Mac/API host (optional heavy deps / GPU).
+REMOTE_RENDER_SIMS = frozenset({"genesis", "isaaclab", "isaac_sim"})
+
+
+def needs_remote_render(sim: str | None) -> bool:
+    """True when playback must run on a RunPod worker (not the local API host)."""
+    return (sim or "").strip().lower() in REMOTE_RENDER_SIMS
+
+
 def worker_image_for_sim(sim: str, default_image: str | None = None) -> str:
     """Pick worker image by sim. Genesis/Isaac prefer dedicated tags when set."""
     default = (default_image or os.environ.get("ROBOLAB_WORKER_IMAGE") or "").strip()
@@ -386,8 +395,14 @@ def create_training_pod(
     cfg: RunConfig,
     git_sha: str,
     env_bundle: dict[str, str] | None = None,
+    job: str = "train",
+    wandb_url: str | None = None,
 ) -> dict[str, Any]:
-    """Create an on-demand pod. Returns {pod_id, gpu_type, hourly_rate, raw}."""
+    """Create an on-demand pod. Returns {pod_id, gpu_type, hourly_rate, raw}.
+
+    job='train' runs the trainer; job='render' runs playback video on the worker
+    (required for genesis/isaac — Mac API host lacks those optional packages).
+    """
     env_bundle = env_bundle or require_runpod_launch_env()
     runpod = _configure_sdk(env_bundle["RUNPOD_API_KEY"])
 
@@ -399,7 +414,13 @@ def create_training_pod(
     cloud_pref = (os.environ.get("RUNPOD_CLOUD_TYPE") or "SECURE").strip().upper()
     if cloud_pref not in {"ALL", "COMMUNITY", "SECURE"}:
         cloud_pref = "SECURE"
-    max_runtime = str(int(float(os.environ.get("MAX_RUNTIME_MIN", "120"))))
+    job_key = (job or "train").strip().lower() or "train"
+    if job_key == "render":
+        max_runtime = str(
+            int(float(os.environ.get("ROBOLAB_RENDER_MAX_RUNTIME_MIN", "25")))
+        )
+    else:
+        max_runtime = str(int(float(os.environ.get("MAX_RUNTIME_MIN", "120"))))
 
     config_json = cfg.model_dump_json()
     config_b64 = base64.b64encode(config_json.encode("utf-8")).decode("ascii")
@@ -414,6 +435,7 @@ def create_training_pod(
         "BACKEND_URL": public,
         "MAX_RUNTIME_MIN": max_runtime,
         "ROBOLAB_GIT_URL": env_bundle["ROBOLAB_GIT_URL"],
+        "ROBOLAB_JOB": job_key,
     }
     entity = (os.environ.get("WANDB_ENTITY") or "").strip()
     if entity:
@@ -434,6 +456,13 @@ def create_training_pod(
         pod_env["ROBOLAB_ISAAC_MODE"] = (
             (os.environ.get("ROBOLAB_ISAAC_MODE") or "thin").strip() or "thin"
         )
+    if job_key == "render":
+        wb = (wandb_url or "").strip()
+        if not wb:
+            raise RunPodConfigError(
+                "wandb_url is required to launch a remote video render pod."
+            )
+        pod_env["WANDB_URL"] = wb
 
     if not pod_env["WANDB_API_KEY"]:
         raise RunPodConfigError(
@@ -447,17 +476,21 @@ def create_training_pod(
     image_name = worker_image_for_sim(sim_key, env_bundle["ROBOLAB_WORKER_IMAGE"])
 
     # UI "Best available" sends gpu_type=best; null/empty also walks the fallback list.
-    preferred = cfg.gpu_type
+    # Render jobs: prefer best/cheap GPUs even if training used a specific type.
+    preferred = cfg.gpu_type if job_key != "render" else (
+        (os.environ.get("ROBOLAB_RENDER_GPU_TYPE") or "best").strip() or "best"
+    )
     candidates = _gpu_candidates(preferred)
     last_err: Exception | None = None
     attempts: list[str] = []
+    pod_name = f"robolab-render-{run_id}" if job_key == "render" else f"robolab-{run_id}"
     for gpu_type_id in candidates:
         for cloud_type in _cloud_type_candidates(cloud_pref):
             try:
                 rate_cloud = "SECURE" if cloud_type == "ALL" else cloud_type
                 hourly = query_hourly_rate(gpu_type_id, cloud_type=rate_cloud)
                 create_kwargs: dict[str, Any] = {
-                    "name": f"robolab-{run_id}",
+                    "name": pod_name,
                     "image_name": image_name,
                     "gpu_type_id": gpu_type_id,
                     "cloud_type": cloud_type,
@@ -482,14 +515,19 @@ def create_training_pod(
                     live = None
                 if live and live.get("costPerHr") is not None:
                     hourly = float(live["costPerHr"])
+                est_min = int(float(max_runtime))
                 return {
                     "pod_id": str(pod_id),
                     "gpu_type": gpu_type_id,
                     "hourly_rate": float(hourly),
                     "raw": raw,
-                    "estimated_cost_usd": estimate_cost_usd(float(hourly)),
+                    "estimated_cost_usd": estimate_cost_usd(
+                        float(hourly), max_runtime_min=est_min
+                    ),
                     "cloud_type": cloud_type,
                     "data_center_id": data_center_id,
+                    "job": job_key,
+                    "image": image_name,
                 }
             except RunPodConfigError:
                 raise
@@ -553,3 +591,26 @@ def launch_runpod(
 
     git_sha = resolve_git_sha()
     return create_training_pod(run_id=run_id, cfg=cfg, git_sha=git_sha, env_bundle=env_bundle)
+
+
+def launch_render_runpod(
+    cfg: RunConfig,
+    run_id: str,
+    *,
+    wandb_url: str,
+    backend_public_url: str | None = None,
+) -> dict[str, Any]:
+    """Spin a short-lived :genesis/:isaac worker to record playback video."""
+    write_run_config(cfg, run_id)
+    env_bundle = require_runpod_launch_env()
+    if backend_public_url:
+        env_bundle = {**env_bundle, "BACKEND_PUBLIC_URL": backend_public_url.rstrip("/")}
+    git_sha = resolve_git_sha()
+    return create_training_pod(
+        run_id=run_id,
+        cfg=cfg,
+        git_sha=git_sha,
+        env_bundle=env_bundle,
+        job="render",
+        wandb_url=wandb_url,
+    )

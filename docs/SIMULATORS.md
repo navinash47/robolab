@@ -8,7 +8,7 @@ Human-oriented map of what appears in the New Run **Sim** dropdown, what works t
 |---|---|---|---|
 | **mujoco** | **Real** — default | `mujoco` (core dep) | MJCF scenes under `robots/diffdrive_lidar/`; kinematic drive + `mj_ray` lidar |
 | **pybullet** | **Real** | `pybullet` (core dep) | Same URDF; corridor/maze as `createMultiBody` boxes; TinyRenderer |
-| **genesis** | **Real adapter** when `genesis-world` installed; else fails with install message | Optional: `pip install genesis-world` (~80 MB wheel + heavy stack). Prefer GPU for speed; **CPU backend works** for smoke | Same URDF + Box walls; 5-ray Lidar via `SphericalPattern(angles=…)`. Not a default dep — flagged heavy |
+| **genesis** | **Real** on RunPod (`:genesis` / install-at-start); Mac API host has no `genesis-world` | Optional on Linux GPU: `pip install genesis-world`. **Train + Render video both use RunPod** — do not expect local Mac playback | Same URDF + Box walls; 5-ray Lidar via `SphericalPattern(angles=…)`. Not a default Mac dep |
 | **isaaclab** | **Stub** (Mac unsupported; RunPod needs approved `:isaac` image) | NVIDIA Isaac Lab on Isaac Sim | See `docs/ISAAC_INSTALL.md` — do not treat as a passing gate |
 | **isaac_sim** | **Stub** | Isaac Sim runtime (separate from Lab) | Naming stub only; same NVIDIA/Linux constraints |
 

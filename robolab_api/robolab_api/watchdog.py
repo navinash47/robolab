@@ -251,6 +251,24 @@ def decide_kill(
     )
 
 
+def decide_render_pod_kill(
+    *,
+    runtime_min: float,
+    max_runtime_min: float,
+) -> KillDecision:
+    """Kill policy for video-render pods attached to COMPLETE runs.
+
+    Never flips training run status — only terminates the render pod (caller
+    sets video_status=FAILED). No stale-heartbeat kill (render has no HB).
+    """
+    if runtime_min > max_runtime_min:
+        return KillDecision(
+            True,
+            f"render runtime {runtime_min:.1f}min > max {max_runtime_min}",
+        )
+    return KillDecision(False)
+
+
 def _env_from_pod(pod: dict[str, Any]) -> dict[str, str]:
     raw = pod.get("env") or {}
     if isinstance(raw, dict):
@@ -361,6 +379,37 @@ def _kill_run(
             record_logistics_from_run(session, run)
         except Exception:
             logger.exception("failed to record logistics failure for %s", run.id)
+    session.commit()
+    _stale_misses.pop(pod_id, None)
+    _absent_misses.pop(pod_id, None)
+
+
+def _kill_render_pod(
+    session: Session,
+    run: Run,
+    pod_id: str,
+    reason: str,
+) -> None:
+    """Terminate a video-render pod without flipping COMPLETE → KILLED."""
+    from robolab.compute.runpod import terminate_pod
+
+    logger.warning("watchdog terminating render pod=%s reason=%s", pod_id, reason)
+    try:
+        terminate_pod(pod_id)
+    except Exception as exc:
+        logger.error("terminate_pod(%s) failed: %s", pod_id, exc)
+
+    now = datetime.now(timezone.utc)
+    pod_row = session.get(Pod, pod_id)
+    if pod_row:
+        pod_row.status = "TERMINATED"
+        pod_row.terminated_at = now
+        session.add(pod_row)
+    if run.video_status == "RENDERING":
+        run.video_status = "FAILED"
+        run.video_error = f"render pod killed: {reason}"
+        run.updated_at = now
+        session.add(run)
     session.commit()
     _stale_misses.pop(pod_id, None)
     _absent_misses.pop(pod_id, None)
@@ -487,6 +536,46 @@ def sweep_once() -> list[str]:
 
             # Accrue cost for known runpod runs
             if run and run.compute == "runpod":
+                env_job = (env.get("ROBOLAB_JOB") or "").strip().lower()
+                is_render_pod = (
+                    env_job == "render"
+                    or (pod_row is not None and str(remote.get("name") or "").startswith("robolab-render-"))
+                    or (
+                        run.status == RunStatus.COMPLETE.value
+                        and run.video_status == "RENDERING"
+                        and pod_row is not None
+                        and pod_row.id != run.pod_id
+                    )
+                )
+                # Finished training runs must never have cost rewritten or status
+                # flipped by a short-lived render pod.
+                if run.status in {
+                    RunStatus.COMPLETE.value,
+                    RunStatus.FAILED.value,
+                    RunStatus.KILLED_BY_WATCHDOG.value,
+                }:
+                    if is_render_pod and run.video_status == "RENDERING":
+                        started = (
+                            _aware(pod_row.started_at if pod_row else None) or now
+                        )
+                        runtime_min = (now - started).total_seconds() / 60.0
+                        render_max = float(
+                            os.environ.get("ROBOLAB_RENDER_MAX_RUNTIME_MIN", "25")
+                        )
+                        decision = decide_render_pod_kill(
+                            runtime_min=runtime_min,
+                            max_runtime_min=render_max,
+                        )
+                        if pod_row and pod_row.status == "PROVISIONING":
+                            desired = (remote.get("desiredStatus") or "").upper()
+                            if desired == "RUNNING" or remote.get("runtime"):
+                                pod_row.status = "RUNNING"
+                                session.add(pod_row)
+                        if decision.should_kill:
+                            _kill_render_pod(session, run, pod_id, decision.reason)
+                            actions.append(f"{pod_id}:render_kill:{decision.reason}")
+                    continue
+
                 rate = float(
                     run.hourly_rate
                     or remote.get("costPerHr")
@@ -646,7 +735,21 @@ def sweep_once() -> list[str]:
                 _mark_run_failed_pod_gone(session, run, pod_row, reason)
                 actions.append(f"{pod_row.id}:pod_vanished")
             else:
-                # No active run — just close the pod row.
+                # Terminal training status — close pod row; fail video if still RENDERING.
+                if (
+                    run is not None
+                    and run.status == RunStatus.COMPLETE.value
+                    and run.video_status == "RENDERING"
+                    and pod_row.id != run.pod_id
+                ):
+                    run.video_status = "FAILED"
+                    run.video_error = (
+                        "Render pod disappeared before video-complete "
+                        f"(status={remote_status})."
+                    )
+                    run.updated_at = now
+                    session.add(run)
+                    actions.append(f"{pod_row.id}:render_pod_vanished")
                 pod_row.status = "TERMINATED"
                 pod_row.terminated_at = now
                 session.add(pod_row)

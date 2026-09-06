@@ -18,11 +18,16 @@ report_fail() {
   local escaped
   escaped=$(printf '%s' "${msg}" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null \
     || printf '"%s"' "${msg//\"/\\\"}")
-  curl -sS --max-time 30 -X POST "${BACKEND_URL}/api/runs/${RUN_ID}/fail" \
+  # Render jobs must never mark the training run FAILED — only video_status.
+  local endpoint="fail"
+  if [[ "${ROBOLAB_JOB:-train}" == "render" ]]; then
+    endpoint="video-fail"
+  fi
+  curl -sS --max-time 30 -X POST "${BACKEND_URL}/api/runs/${RUN_ID}/${endpoint}" \
     -H "Content-Type: application/json" \
     -d "{\"error\": ${escaped}}" \
-    && log "Posted fail to backend" \
-    || log "WARN: fail POST did not succeed"
+    && log "Posted ${endpoint} to backend" \
+    || log "WARN: ${endpoint} POST did not succeed"
 }
 
 cleanup() {
@@ -273,32 +278,56 @@ else
   log "CUDA probe OK"
 fi
 
-log "Starting trainer run_id=${RUN_ID}"
-set +e
-TRAIN_CMD=(uv run --package robolab python -m robolab.train.trainer \
-  --run-id "${RUN_ID}" \
-  --config "${CONFIG_PATH}" \
-  --backend-url "${BACKEND_URL}")
-if command -v xvfb-run >/dev/null 2>&1; then
-  xvfb-run -a -s "-screen 0 640x480x24" "${TRAIN_CMD[@]}" \
-    > /tmp/robolab-trainer.out 2> /tmp/robolab-trainer.err
+ROBOLAB_JOB="${ROBOLAB_JOB:-train}"
+if [[ "${ROBOLAB_JOB}" == "render" ]]; then
+  : "${WANDB_URL:?WANDB_URL required for ROBOLAB_JOB=render}"
+  log "Starting video render run_id=${RUN_ID}"
+  set +e
+  RENDER_CMD=(uv run --package robolab python -m robolab.train.render_video \
+    --run-id "${RUN_ID}" \
+    --config "${CONFIG_PATH}" \
+    --wandb-url "${WANDB_URL}" \
+    --backend-url "${BACKEND_URL}")
+  if command -v xvfb-run >/dev/null 2>&1; then
+    xvfb-run -a -s "-screen 0 640x480x24" "${RENDER_CMD[@]}" \
+      > /tmp/robolab-trainer.out 2> /tmp/robolab-trainer.err
+  else
+    "${RENDER_CMD[@]}" > /tmp/robolab-trainer.out 2> /tmp/robolab-trainer.err
+  fi
+  trainer_rc=$?
+  set -e
 else
-  "${TRAIN_CMD[@]}" > /tmp/robolab-trainer.out 2> /tmp/robolab-trainer.err
+  log "Starting trainer run_id=${RUN_ID}"
+  set +e
+  TRAIN_CMD=(uv run --package robolab python -m robolab.train.trainer \
+    --run-id "${RUN_ID}" \
+    --config "${CONFIG_PATH}" \
+    --backend-url "${BACKEND_URL}")
+  if command -v xvfb-run >/dev/null 2>&1; then
+    xvfb-run -a -s "-screen 0 640x480x24" "${TRAIN_CMD[@]}" \
+      > /tmp/robolab-trainer.out 2> /tmp/robolab-trainer.err
+  else
+    "${TRAIN_CMD[@]}" > /tmp/robolab-trainer.out 2> /tmp/robolab-trainer.err
+  fi
+  trainer_rc=$?
+  set -e
 fi
-trainer_rc=$?
-set -e
 if [[ -s /tmp/robolab-trainer.out ]]; then
-  log "trainer stdout (tail):"; tail -n 40 /tmp/robolab-trainer.out || true
+  log "job stdout (tail):"; tail -n 40 /tmp/robolab-trainer.out || true
 fi
 if [[ -s /tmp/robolab-trainer.err ]]; then
-  log "trainer stderr (tail):"; tail -n 40 /tmp/robolab-trainer.err || true
+  log "job stderr (tail):"; tail -n 40 /tmp/robolab-trainer.err || true
 fi
 if [[ "${trainer_rc}" -ne 0 ]]; then
   detail=$(tr '\n' ' ' </tmp/robolab-trainer.err 2>/dev/null | tr -cd '[:print:] ' | tail -c 1500)
   FAIL_POSTED=0
-  report_fail "trainer rc=${trainer_rc}: ${detail:-no stderr captured}"
+  if [[ "${ROBOLAB_JOB}" == "render" ]]; then
+    report_fail "render rc=${trainer_rc}: ${detail:-no stderr captured}"
+  else
+    report_fail "trainer rc=${trainer_rc}: ${detail:-no stderr captured}"
+  fi
   exit "${trainer_rc}"
 fi
 
 TRAINER_OK=1
-log "Trainer finished OK"
+log "Job finished OK (job=${ROBOLAB_JOB})"

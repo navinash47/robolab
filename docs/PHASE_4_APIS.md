@@ -172,14 +172,18 @@ Policy custom objects (`RoboLabActorCriticPolicy` + arch registry) must be impor
 
 | Endpoint | Role |
 |---|---|
-| `POST /api/runs/{id}/render` | Queue local render subprocess; status → `RENDERING` |
+| `POST /api/runs/{id}/render` | Queue render: **local** subprocess for mujoco/pybullet; **RunPod** (`ROBOLAB_JOB=render`, `:genesis` / `:isaac` image) for genesis/isaac — Mac cannot import those packages |
+| `POST /api/runs/{id}/video-upload` | Multipart MP4 from a RunPod render worker → `videos/{id}/playback.mp4` |
 | `GET /api/runs/{id}` | Includes `video_status`, `video_url`, `video_error` |
 | `GET /api/runs/{id}/video` | `FileResponse` MP4 when `READY` (dashboard player) |
 
 UI: on COMPLETE run, **Render video** → poll until READY → HTML5 `<video controls src="/api/runs/{id}/video">`.
 
+**Genesis / Isaac:** do not install `genesis-world` on the Mac for playback. Render launches the same RunPod worker path as training (`ROBOLAB_WORKER_IMAGE_GENESIS` / `:isaac`); the worker posts the MP4 back via `video-upload` then `video-complete`.
+
 ## Hard rules baked into Phase 4
 
 1. **Fresh env per recording** — create env → RecordVideo → one episode → `close()`; never wrap an already-stepped MuJoCo env.
-2. **Subprocess render** — set `MUJOCO_GL` in child env before import.
+2. **Subprocess / remote render** — set `MUJOCO_GL` in child env before import; genesis/isaac render on RunPod only.
 3. **Never commit** `.env`, keys, `checkpoints/`, `*.mp4`, `videos/`, `artifacts/`.
+4. **Render failures must not demote COMPLETE** — workers use `/video-fail` (API also routes `/fail` → video-fail when status is COMPLETE).

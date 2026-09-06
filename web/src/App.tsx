@@ -724,7 +724,7 @@ export default function App() {
                         const label = stub
                           ? `${s} (stub — needs NVIDIA)`
                           : needsInstall
-                            ? `${s} (install genesis-world)`
+                            ? `${s} (RunPod — no Mac install)`
                             : s;
                         return (
                           <option key={s} value={s}>

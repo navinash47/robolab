@@ -16,7 +16,12 @@ report_fail() {
   local escaped
   escaped=$(printf '%s' "${msg}" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null \
     || printf '"%s"' "${msg}")
-  curl -sS --max-time 30 -X POST "${BACKEND_URL}/api/runs/${RUN_ID}/fail" \
+  # Render pods must not demote COMPLETE training via /fail.
+  local endpoint="fail"
+  if [[ "${ROBOLAB_JOB:-}" == "render" ]]; then
+    endpoint="video-fail"
+  fi
+  curl -sS --max-time 30 -X POST "${BACKEND_URL}/api/runs/${RUN_ID}/${endpoint}" \
     -H "Content-Type: application/json" \
     -d "{\"error\": ${escaped}}" || true
 }

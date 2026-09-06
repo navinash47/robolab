@@ -12,13 +12,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.sse import EventSourceResponse
 from pydantic import BaseModel
 from sqlmodel import select
 
 from robolab.compute.local import launch_local, launch_render, repo_root
-from robolab.compute.runpod import RunPodConfigError, launch_runpod
+from robolab.compute.runpod import (
+    RunPodConfigError,
+    launch_render_runpod,
+    launch_runpod,
+    needs_remote_render,
+)
 from robolab.core.run import RunConfig, RunStatus
 from robolab_api.budget import refuse_if_over_cap
 from robolab_api.db import Pod, Run, SessionDep
@@ -445,9 +450,17 @@ def fail(run_id: str, body: FailBody, session: SessionDep) -> dict:
     run = session.get(Run, run_id)
     if not run:
         raise HTTPException(404, f"Run {run_id} not found")
+    incoming = (body.error or "").strip()
+    # COMPLETE + render worker posting /fail (old bootstrap) → video-fail only.
+    if run.status == RunStatus.COMPLETE.value:
+        run.video_status = "FAILED"
+        run.video_error = incoming or run.video_error or "render worker failed"
+        run.updated_at = datetime.now(timezone.utc)
+        session.add(run)
+        session.commit()
+        return {"ok": True, "routed": "video-fail"}
     # Keep a more specific error if one is already recorded (entrypoint fallback
     # used to overwrite trainer/W&B detail with a generic exit message).
-    incoming = (body.error or "").strip()
     existing = (run.error or "").strip()
     if not existing or (incoming and len(incoming) >= len(existing)):
         run.error = incoming or existing or "failed"
@@ -462,7 +475,11 @@ def fail(run_id: str, body: FailBody, session: SessionDep) -> dict:
 
 @router.post("/{run_id}/render")
 def start_render(run_id: str, session: SessionDep) -> dict:
-    """Queue headless playback recording for a COMPLETE run (Phase 4)."""
+    """Queue headless playback recording for a COMPLETE run (Phase 4).
+
+    mujoco/pybullet → local subprocess. genesis/isaac → short RunPod worker
+    with the matching image (Mac cannot import genesis-world / Isaac).
+    """
     run = session.get(Run, run_id)
     if not run:
         raise HTTPException(404, f"Run {run_id} not found")
@@ -486,7 +503,60 @@ def start_render(run_id: str, session: SessionDep) -> dict:
         # Still try — render_video may find an artifact on W&B from a later upload
         pass
 
+    cfg: RunConfig | None = None
     try:
+        if run.config_json:
+            cfg = RunConfig.model_validate_json(run.config_json)
+    except Exception:
+        cfg = None
+    if cfg is None:
+        try:
+            import yaml
+
+            raw = yaml.safe_load(config_path.read_text())
+            cfg = RunConfig.model_validate(raw)
+        except Exception as exc:
+            raise HTTPException(400, f"Cannot parse run config: {exc}") from exc
+
+    remote = needs_remote_render(cfg.sim or run.sim)
+    try:
+        if remote:
+            try:
+                refuse_if_over_cap(session)
+            except RuntimeError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            public = (os.environ.get("BACKEND_PUBLIC_URL") or "").strip()
+            result = launch_render_runpod(
+                cfg,
+                run_id=run_id,
+                wandb_url=run.wandb_url,
+                backend_public_url=public or None,
+            )
+            pod_id = str(result["pod_id"])
+            session.add(
+                Pod(
+                    id=pod_id,
+                    run_id=run.id,
+                    gpu_type=str(result.get("gpu_type") or ""),
+                    hourly_rate=float(result.get("hourly_rate") or 0.0),
+                    status="PROVISIONING",
+                )
+            )
+            # Keep training pod_id on the run row for history; render pod is in Pod table.
+            run.video_status = "RENDERING"
+            run.video_error = None
+            run.updated_at = datetime.now(timezone.utc)
+            session.add(run)
+            session.commit()
+            session.refresh(run)
+            logger.info(
+                "remote render pod=%s image=%s run=%s",
+                pod_id,
+                result.get("image"),
+                run_id,
+            )
+            return _run_to_dict(run)
+
         proc = launch_render(
             run_id=run_id,
             config_path=config_path,
@@ -494,6 +564,15 @@ def start_render(run_id: str, session: SessionDep) -> dict:
             checkpoint=ckpt_arg,
             backend_url="http://127.0.0.1:8000",
         )
+    except RunPodConfigError as exc:
+        run.video_status = "FAILED"
+        run.video_error = str(exc)
+        run.updated_at = datetime.now(timezone.utc)
+        session.add(run)
+        session.commit()
+        raise HTTPException(400, str(exc)) from exc
+    except HTTPException:
+        raise
     except Exception as exc:
         run.video_status = "FAILED"
         run.video_error = str(exc)
@@ -510,6 +589,39 @@ def start_render(run_id: str, session: SessionDep) -> dict:
     session.commit()
     session.refresh(run)
     return _run_to_dict(run)
+
+
+@router.post("/{run_id}/video-upload")
+async def video_upload(
+    run_id: str,
+    session: SessionDep,
+    file: UploadFile = File(...),
+) -> dict:
+    """Accept MP4 bytes from a RunPod render worker; store under videos/{run_id}/."""
+    run = session.get(Run, run_id)
+    if not run:
+        raise HTTPException(404, f"Run {run_id} not found")
+    if run.status != RunStatus.COMPLETE.value:
+        raise HTTPException(400, f"Video upload requires COMPLETE run (got {run.status})")
+
+    dest_dir = repo_root() / "videos" / run_id
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / "playback.mp4"
+    payload = await file.read()
+    if not payload:
+        raise HTTPException(400, "Empty video upload")
+    dest.write_bytes(payload)
+
+    run.video_path = str(dest)
+    run.video_url = f"/api/runs/{run_id}/video"
+    # Stay RENDERING until video-complete (wandb upload may still be in flight).
+    if run.video_status != "READY":
+        run.video_status = "RENDERING"
+    run.video_error = None
+    run.updated_at = datetime.now(timezone.utc)
+    session.add(run)
+    session.commit()
+    return {"ok": True, "video_path": str(dest), "bytes": len(payload)}
 
 
 @router.post("/{run_id}/video-complete")

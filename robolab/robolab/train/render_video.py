@@ -13,7 +13,10 @@ import json
 import os
 import platform
 import sys
+import time
 import traceback
+import urllib.error
+import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -274,6 +277,74 @@ def upload_wandb_video(*, wandb_url: str, mp4_path: Path, caption: str) -> str |
         return run.url
 
 
+def _on_runpod_worker() -> bool:
+    return bool(
+        (os.environ.get("RUNPOD_POD_ID") or "").strip()
+        or (os.environ.get("ROBOLAB_JOB") or "").strip().lower() == "render"
+    )
+
+
+def upload_video_to_backend(*, backend_url: str, run_id: str, mp4_path: Path) -> str:
+    """POST MP4 to the API host so GET /video can serve it (pod paths are remote)."""
+    import mimetypes
+    import uuid
+
+    boundary = f"----RoboLabVideo{uuid.uuid4().hex}"
+    file_bytes = mp4_path.read_bytes()
+    filename = mp4_path.name or "playback.mp4"
+    ctype = mimetypes.guess_type(filename)[0] or "video/mp4"
+    preamble = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+        f"Content-Type: {ctype}\r\n\r\n"
+    ).encode("utf-8")
+    epilogue = f"\r\n--{boundary}--\r\n".encode("utf-8")
+    body = preamble + file_bytes + epilogue
+    url = f"{backend_url.rstrip('/')}/api/runs/{run_id}/video-upload"
+    headers = {
+        "Content-Type": f"multipart/form-data; boundary={boundary}",
+        "Content-Length": str(len(body)),
+        "User-Agent": "RoboLabWorker/1.0 (+https://github.com/navinash47/robolab)",
+        "Accept": "application/json",
+    }
+    last_exc: BaseException | None = None
+    for attempt in range(1, 6):
+        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                raw = resp.read().decode("utf-8", errors="replace")
+            data = json.loads(raw) if raw else {}
+            path = (data.get("video_path") or "").strip()
+            if not path:
+                raise RuntimeError(f"video-upload returned no video_path: {raw[:300]}")
+            return path
+        except urllib.error.HTTPError as exc:
+            last_exc = exc
+            if exc.code not in {
+                403,
+                408,
+                425,
+                429,
+                500,
+                502,
+                503,
+                504,
+                520,
+                521,
+                522,
+                523,
+                524,
+                530,
+            }:
+                raise RuntimeError(
+                    f"video-upload HTTP {exc.code}: {exc.read()[:400]!r}"
+                ) from exc
+        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+            last_exc = exc
+        time.sleep(min(8.0, 0.5 * (2 ** (attempt - 1))))
+    raise RuntimeError(f"video-upload failed after retries: {last_exc}")
+
+
 def render_run(
     *,
     run_id: str,
@@ -303,9 +374,15 @@ def render_run(
         )
         caption = f"{cfg.task} / {cfg.arch} / {cfg.sim} playback"
         wb_url = upload_wandb_video(wandb_url=wandb_url, mp4_path=mp4, caption=caption)
+        # On RunPod the MP4 lives on the worker FS — push bytes to the API host.
+        video_path = str(mp4)
+        if _on_runpod_worker():
+            video_path = upload_video_to_backend(
+                backend_url=backend, run_id=run_id, mp4_path=mp4
+            )
         result = {
             "status": "READY",
-            "video_path": str(mp4),
+            "video_path": video_path,
             "video_url": f"/api/runs/{run_id}/video",
             "wandb_url": wb_url or wandb_url,
             "mujoco_gl": gl,
