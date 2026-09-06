@@ -12,20 +12,35 @@ from typing import Any
 from stable_baselines3.common.callbacks import BaseCallback
 
 
-def _post_json(url: str, payload: dict[str, Any], timeout: float = 5.0) -> None:
+def _post_json(url: str, payload: dict[str, Any], timeout: float = 15.0) -> None:
+    """POST JSON to backend. Retries on transient tunnel/WAF failures."""
     data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            resp.read()
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        # Heartbeat must not crash training; log once via print.
-        print(f"[robolab] heartbeat POST failed: {exc}")
+    headers = {
+        "Content-Type": "application/json",
+        # Cloudflare Bot Fight often 403s bare urllib from datacenter IPs.
+        "User-Agent": "RoboLabWorker/1.0 (+https://github.com/navinash47/robolab)",
+        "Accept": "application/json",
+    }
+    last_exc: BaseException | None = None
+    for attempt in range(1, 6):
+        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                resp.read()
+            return
+        except urllib.error.HTTPError as exc:
+            last_exc = exc
+            # 403/502/530 are often CF tunnel/WAF flaps — retry.
+            if exc.code not in {403, 408, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 530}:
+                print(f"[robolab] heartbeat POST failed: {exc}")
+                return
+            print(f"[robolab] heartbeat POST HTTP {exc.code} (attempt {attempt}/5); retrying")
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            last_exc = exc
+            print(f"[robolab] heartbeat POST failed (attempt {attempt}/5): {exc}")
+        time.sleep(min(8.0, 0.5 * (2 ** (attempt - 1))))
+    if last_exc is not None:
+        print(f"[robolab] heartbeat POST gave up: {last_exc}")
 
 
 class WandbAndHeartbeatCallback(BaseCallback):
