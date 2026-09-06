@@ -135,8 +135,29 @@ def launch_render(
     wandb_url: str,
     checkpoint: Path | None,
     backend_url: str = "http://127.0.0.1:8000",
+    sim: str | None = None,
 ) -> subprocess.Popen:
-    """Spawn playback renderer subprocess with MUJOCO_GL set before import."""
+    """Spawn playback renderer subprocess with MUJOCO_GL set before import.
+
+    genesis / isaac* must not run on the Mac API host (optional heavy deps).
+    Callers must route those sims through launch_render_runpod instead.
+    """
+    sim_key = (sim or "").strip().lower()
+    if not sim_key and config_path.is_file():
+        try:
+            import yaml
+
+            raw = yaml.safe_load(config_path.read_text()) or {}
+            sim_key = str(raw.get("sim") or "").strip().lower()
+        except Exception:
+            sim_key = ""
+    if sim_key in {"genesis", "isaaclab", "isaac_sim"}:
+        raise RuntimeError(
+            f"Local video render refuses sim={sim_key!r}. "
+            "Use RunPod remote render (:genesis / :isaac) — "
+            "Mac cannot import genesis-world / Isaac."
+        )
+
     env = _trainer_env(backend_url)
     gl = _mujoco_gl_for_local()
     if gl:

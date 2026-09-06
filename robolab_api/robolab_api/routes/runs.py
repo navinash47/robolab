@@ -518,13 +518,17 @@ def start_render(run_id: str, session: SessionDep) -> dict:
         except Exception as exc:
             raise HTTPException(400, f"Cannot parse run config: {exc}") from exc
 
-    remote = needs_remote_render(cfg.sim or run.sim)
+    sim_name = (run.sim or cfg.sim or "").strip().lower()
+    remote = needs_remote_render(sim_name)
     try:
         if remote:
             try:
                 refuse_if_over_cap(session)
             except RuntimeError as exc:
                 raise HTTPException(400, str(exc)) from exc
+            # Ensure cfg.sim matches DB (remote image selection keys off cfg.sim).
+            if (cfg.sim or "").strip().lower() != sim_name:
+                cfg = cfg.model_copy(update={"sim": sim_name})
             public = (os.environ.get("BACKEND_PUBLIC_URL") or "").strip()
             result = launch_render_runpod(
                 cfg,
@@ -563,6 +567,7 @@ def start_render(run_id: str, session: SessionDep) -> dict:
             wandb_url=run.wandb_url,
             checkpoint=ckpt_arg,
             backend_url="http://127.0.0.1:8000",
+            sim=sim_name,
         )
     except RunPodConfigError as exc:
         run.video_status = "FAILED"

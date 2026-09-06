@@ -39,3 +39,30 @@ def test_render_pod_kill_only_on_runtime() -> None:
     bad = decide_render_pod_kill(runtime_min=30.0, max_runtime_min=25.0)
     assert bad.should_kill
     assert "render runtime" in bad.reason
+
+
+def test_local_launch_render_refuses_genesis(tmp_path, monkeypatch) -> None:
+    from pathlib import Path
+
+    import pytest
+
+    from robolab.compute.local import launch_render
+
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("sim: genesis\ntask: go_to_goal\nrobot: diffdrive_lidar\narch: mlp\n")
+    with pytest.raises(RuntimeError, match="Local video render refuses"):
+        launch_render(
+            run_id="deadbeef",
+            config_path=cfg,
+            wandb_url="https://wandb.ai/e/p/runs/x",
+            checkpoint=None,
+            sim="genesis",
+        )
+    # Path-only (no sim=) still refuses after reading config
+    with pytest.raises(RuntimeError, match="Local video render refuses"):
+        launch_render(
+            run_id="deadbeef",
+            config_path=cfg,
+            wandb_url="https://wandb.ai/e/p/runs/x",
+            checkpoint=None,
+        )
