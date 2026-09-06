@@ -40,10 +40,25 @@ def genesis_available() -> bool:
         return False
 
 
+def _prepare_headless_gl() -> None:
+    """Genesis pulls pyglet at import time; headless GPU pods have no X display."""
+    import os
+
+    os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
+    os.environ.setdefault("NVIDIA_DRIVER_CAPABILITIES", "all")
+    try:
+        import pyglet
+
+        pyglet.options["headless"] = True
+    except Exception:
+        pass
+
+
 def _ensure_gs():
     global _GS_INITED
     if not genesis_available():
         raise RuntimeError(_INSTALL_HINT)
+    _prepare_headless_gl()
     import genesis as gs
 
     if not _GS_INITED:
@@ -55,9 +70,18 @@ def _ensure_gs():
         try:
             gs.init(backend=backend, precision="32", logging_level="warning")
         except Exception as exc:
-            raise RuntimeError(
-                f"genesis.init failed ({exc}). {_INSTALL_HINT}"
-            ) from exc
+            # GPU init can fail on driver/EGL mismatch — fall back to CPU once.
+            if use_gpu:
+                try:
+                    gs.init(backend=gs.cpu, precision="32", logging_level="warning")
+                except Exception as exc2:
+                    raise RuntimeError(
+                        f"genesis.init failed gpu=({exc}) cpu=({exc2}). {_INSTALL_HINT}"
+                    ) from exc2
+            else:
+                raise RuntimeError(
+                    f"genesis.init failed ({exc}). {_INSTALL_HINT}"
+                ) from exc
         _GS_INITED = True
     return gs
 

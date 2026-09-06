@@ -197,9 +197,22 @@ if [[ "${SIM_NAME}" == "genesis" || "${ROBOLAB_INSTALL_GENESIS:-}" == "1" ]]; th
     fi
   fi
   # Torch/genesis emit FutureWarnings on stderr; never treat warnings as errors here.
+  # Headless pods: pyglet needs EGL headless before `import genesis`.
   export PYTHONWARNINGS="${PYTHONWARNINGS:-ignore}"
-  if ! "${VENV_PY}" -W ignore -c "import warnings; warnings.filterwarnings('ignore'); import genesis; print('genesis_ok')" \
-      >/tmp/robolab-genesis-import.out 2>/tmp/robolab-genesis-import.err; then
+  export PYOPENGL_PLATFORM="${PYOPENGL_PLATFORM:-egl}"
+  export NVIDIA_DRIVER_CAPABILITIES="${NVIDIA_DRIVER_CAPABILITIES:-all}"
+  if ! "${VENV_PY}" -W ignore -c "
+import os, warnings
+warnings.filterwarnings('ignore')
+os.environ.setdefault('PYOPENGL_PLATFORM', 'egl')
+try:
+    import pyglet
+    pyglet.options['headless'] = True
+except Exception:
+    pass
+import genesis
+print('genesis_ok')
+" >/tmp/robolab-genesis-import.out 2>/tmp/robolab-genesis-import.err; then
     {
       echo '--- import stdout (head) ---'
       head -c 400 /tmp/robolab-genesis-import.out 2>/dev/null || true
