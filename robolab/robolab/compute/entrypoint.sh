@@ -159,16 +159,41 @@ if [[ "${SIM_NAME}" == "genesis" || "${ROBOLAB_INSTALL_GENESIS:-}" == "1" ]]; th
   fi
   # Must install into the same interpreter `uv run --package robolab` uses.
   # Plain `uv pip install --python 3.11` often lands outside .venv → false "missing package".
-  GENESIS_ARGS=(genesis-world)
+  # Network-volume venvs can accumulate broken dist-info (e.g. plotly METADATA missing).
+  SITE_PKGS="${REPO_DIR}/.venv/lib/python3.11/site-packages"
+  if [[ -d "${SITE_PKGS}" ]]; then
+    for broken in plotly pygel3d genesis; do
+      if compgen -G "${SITE_PKGS}/${broken}*" >/dev/null 2>&1; then
+        if [[ ! -f "${SITE_PKGS}/${broken}"*-dist-info/METADATA ]] 2>/dev/null; then
+          log "Removing possibly corrupt ${broken}* from volume venv"
+          rm -rf "${SITE_PKGS}/${broken}"* || true
+        fi
+      fi
+    done
+    # Explicit known failure mode from wall_follow genesis pods:
+    if [[ -d "${SITE_PKGS}/plotly" && ! -f "${SITE_PKGS}/plotly-5.24.1.dist-info/METADATA" ]]; then
+      log "Removing corrupt plotly install"
+      rm -rf "${SITE_PKGS}/plotly" "${SITE_PKGS}/plotly"-*.dist-info || true
+    fi
+  fi
+  GENESIS_ARGS=(--reinstall-package genesis-world genesis-world)
   if [[ -n "${ROBOLAB_GENESIS_WHEEL_DIR:-}" && -d "${ROBOLAB_GENESIS_WHEEL_DIR}" ]]; then
-    GENESIS_ARGS=(--find-links "${ROBOLAB_GENESIS_WHEEL_DIR}" genesis-world)
+    GENESIS_ARGS=(--find-links "${ROBOLAB_GENESIS_WHEEL_DIR}" --reinstall-package genesis-world genesis-world)
     log "Using wheel dir ${ROBOLAB_GENESIS_WHEEL_DIR}"
   fi
   if ! uv pip install --python "${VENV_PY}" "${GENESIS_ARGS[@]}" 2>/tmp/robolab-genesis-install.err; then
-    if ! "${VENV_PY}" -m pip install "${GENESIS_ARGS[@]}" 2>>/tmp/robolab-genesis-install.err; then
-      tail -c 1200 /tmp/robolab-genesis-install.err > /tmp/robolab-genesis-install.tail || true
-      report_fail "genesis-world install failed: $(tr '\n' ' ' </tmp/robolab-genesis-install.tail | tr -cd '[:print:] ')"
-      exit 1
+    # Last resort: wipe genesis-related packages and retry once
+    log "genesis install failed; wiping related packages and retrying"
+    rm -rf "${SITE_PKGS}/genesis" "${SITE_PKGS}/genesis"-*.dist-info \
+      "${SITE_PKGS}/plotly" "${SITE_PKGS}/plotly"-*.dist-info \
+      "${SITE_PKGS}/pygel3d" "${SITE_PKGS}/pygel3d"-*.dist-info \
+      "${SITE_PKGS}/quadrants" "${SITE_PKGS}/quadrants"-*.dist-info 2>/dev/null || true
+    if ! uv pip install --python "${VENV_PY}" genesis-world 2>>/tmp/robolab-genesis-install.err; then
+      if ! "${VENV_PY}" -m pip install --force-reinstall --no-cache-dir genesis-world 2>>/tmp/robolab-genesis-install.err; then
+        tail -c 1200 /tmp/robolab-genesis-install.err > /tmp/robolab-genesis-install.tail || true
+        report_fail "genesis-world install failed: $(tr '\n' ' ' </tmp/robolab-genesis-install.tail | tr -cd '[:print:] ')"
+        exit 1
+      fi
     fi
   fi
   if ! "${VENV_PY}" -c "import genesis" 2>/tmp/robolab-genesis-import.err; then
