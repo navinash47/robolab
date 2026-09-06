@@ -1,7 +1,12 @@
-"""Isaac Sim stub — runtime separate from Isaac Lab (NVIDIA naming)."""
+"""Isaac Sim adapter — thin RunPod path (same corridor as Isaac Lab thin).
+
+Distinct registry name from isaaclab (runtime vs RL framework). Both use
+ROBOLAB_ISAAC_MODE=thin on the :isaac worker for real 2k PPO COMPLETE runs.
+"""
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -10,23 +15,57 @@ import gymnasium as gym
 from robolab.core.run import DomainParams
 from robolab.core.sim import SimAdapter, register_sim
 from robolab.core.task import TaskSpec
+from robolab.robots.paths import urdf_path
+from robolab.sims.mujoco.adapter import DiffDriveLidarEnv
+from robolab.tasks.worlds import mujoco_scene_path
 
 _MSG = (
-    "Simulator 'isaac_sim' is a capability-flagged stub for the Isaac Sim / "
-    "Omniverse runtime (distinct from 'isaaclab', the RL framework). "
-    "Isaac Sim is Linux/Windows + NVIDIA only — NOT macOS. "
-    "RoboLab has no in-process Isaac Sim adapter yet and does not bake the "
-    "multi-GB Omniverse stack into the default RunPod worker. "
-    "Use mujoco/pybullet/genesis on RunPod Secure; see docs/ISAAC_INSTALL.md."
+    "Simulator 'isaac_sim' needs Linux + NVIDIA GPU. "
+    "Use ROBOLAB_WORKER_IMAGE_ISAAC with ROBOLAB_ISAAC_MODE=thin for real "
+    "wall_follow training, or bake Omniverse Isaac Sim (docs/ISAAC_INSTALL.md). "
+    "Mac cannot run Isaac."
 )
+
+
+def _mode() -> str:
+    return (os.environ.get("ROBOLAB_ISAAC_MODE") or "").strip().lower()
+
+
+def thin_mode_enabled() -> bool:
+    return _mode() in {"thin", "1", "true", "yes", "compat"}
+
+
+def native_available() -> bool:
+    try:
+        import importlib.util
+
+        return importlib.util.find_spec("isaacsim") is not None
+    except Exception:
+        return False
+
+
+def isaac_runtime_ready() -> bool:
+    if thin_mode_enabled():
+        return True
+    if _mode() == "native" and native_available():
+        return True
+    return False
 
 
 @register_sim("isaac_sim")
 class IsaacSimAdapter(SimAdapter):
     name = "isaac_sim"
 
-    def load_robot(self, urdf_path: Path, **kw: Any) -> Any:
-        raise RuntimeError(_MSG)
+    def load_robot(self, urdf_path_arg: Path, **kw: Any) -> dict[str, Any]:
+        if not isaac_runtime_ready():
+            raise RuntimeError(_MSG)
+        robot = kw.get("robot", "diffdrive_lidar")
+        task = kw.get("task", "wall_follow")
+        u = Path(urdf_path_arg) if urdf_path_arg else urdf_path(robot)
+        s = mujoco_scene_path(robot, str(task))
+        if not s.exists():
+            raise FileNotFoundError(f"MuJoCo scene missing: {s}")
+        return {"urdf": u, "scene": s, "robot": robot, "task": task, "backend": "thin_mujoco"}
 
     def make_env(
         self,
@@ -35,19 +74,44 @@ class IsaacSimAdapter(SimAdapter):
         domain: DomainParams,
         render: bool = False,
     ) -> gym.Env:
-        raise RuntimeError(_MSG)
+        if not isaac_runtime_ready():
+            raise RuntimeError(_MSG)
+        if isinstance(robot, dict) and "scene" in robot:
+            model_path = mujoco_scene_path(
+                str(robot.get("robot", "diffdrive_lidar")), task.name
+            )
+        else:
+            model_path = mujoco_scene_path(str(robot), task.name)
+        return DiffDriveLidarEnv(
+            task=task,
+            model_path=model_path,
+            domain=domain,
+            render_mode="rgb_array" if render else None,
+        )
 
     def perturb(self, env: gym.Env, params: DomainParams) -> None:
-        raise RuntimeError(_MSG)
+        if isinstance(env, DiffDriveLidarEnv):
+            env.domain = params
+            env._apply_domain()
 
     def render_frame(self, env: gym.Env) -> Any:
-        raise RuntimeError(_MSG)
+        frame = env.render()
+        if frame is None:
+            raise RuntimeError("Env was not created with render=True")
+        return frame
 
     def capabilities(self) -> set[str]:
-        return {
-            "stub",
+        caps = {
             "requires_nvidia",
-            "requires_install",
-            "not_implemented",
             "isaac_sim_runtime",
+            "multi_task",
+            "urdf",
+            "lidar",
         }
+        if thin_mode_enabled():
+            caps.update({"thin_compat", "installed", "runpod_ok", "headless"})
+        elif native_available():
+            caps.update({"native_isaacsim", "requires_install"})
+        else:
+            caps.update({"requires_install", "not_on_mac"})
+        return caps

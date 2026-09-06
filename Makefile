@@ -1,4 +1,4 @@
-.PHONY: dev worker-image test sync
+.PHONY: dev worker-image worker-image-genesis worker-image-isaac test sync
 
 # Ports:
 #   FastAPI backend  http://127.0.0.1:8000
@@ -26,8 +26,12 @@ sync:
 # Example:
 #   make worker-image IMAGE=yourdockerhub/robolab-worker:phase3
 #   docker login && docker push yourdockerhub/robolab-worker:phase3
-# See docs/PHASE_3_SETUP.md for GHCR and full gate checklist.
+# Variants (require local/Hub phase3 base):
+#   make worker-image-genesis && docker push …:genesis
+#   make worker-image-isaac && docker push …:isaac
 IMAGE ?= avinashnandyala2/robolab-worker:phase3
+IMAGE_GENESIS ?= avinashnandyala2/robolab-worker:genesis
+IMAGE_ISAAC ?= avinashnandyala2/robolab-worker:isaac
 # RunPod GPUs are amd64; force platform even on Apple Silicon / Colima aarch64.
 PLATFORM ?= linux/amd64
 worker-image:
@@ -36,6 +40,16 @@ worker-image:
 	@echo "Built $(IMAGE) ($(PLATFORM))."
 	@echo "Next: docker login && docker push $(IMAGE)"
 	@echo "Then set ROBOLAB_WORKER_IMAGE=$(IMAGE) in .env"
+
+worker-image-genesis:
+	@command -v docker >/dev/null || { echo "docker not found"; exit 1; }
+	docker build --platform $(PLATFORM) -f docker/worker.genesis.Dockerfile -t $(IMAGE_GENESIS) .
+	@echo "Built $(IMAGE_GENESIS). Push then set ROBOLAB_WORKER_IMAGE_GENESIS=$(IMAGE_GENESIS)"
+
+worker-image-isaac:
+	@command -v docker >/dev/null || { echo "docker not found"; exit 1; }
+	docker build --platform $(PLATFORM) -f docker/worker.isaac.Dockerfile -t $(IMAGE_ISAAC) .
+	@echo "Built $(IMAGE_ISAAC). Push then set ROBOLAB_WORKER_IMAGE_ISAAC=$(IMAGE_ISAAC)"
 
 test:
 	@echo "See docs/PHASE_5_TEST.md for the Phase 5 human gate."

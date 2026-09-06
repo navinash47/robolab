@@ -65,6 +65,29 @@ def require_runpod_launch_env() -> dict[str, str]:
     }
 
 
+def worker_image_for_sim(sim: str, default_image: str | None = None) -> str:
+    """Pick worker image by sim. Genesis/Isaac prefer dedicated tags when set."""
+    default = (default_image or os.environ.get("ROBOLAB_WORKER_IMAGE") or "").strip()
+    if not default:
+        raise RunPodConfigError("ROBOLAB_WORKER_IMAGE is missing.")
+    sim_key = (sim or "").strip().lower()
+    if sim_key == "genesis":
+        override = (os.environ.get("ROBOLAB_WORKER_IMAGE_GENESIS") or "").strip()
+        if override:
+            return override
+        if default.endswith(":phase3"):
+            return default[: -len("phase3")] + "genesis"
+        return default
+    if sim_key in {"isaaclab", "isaac_sim"}:
+        override = (os.environ.get("ROBOLAB_WORKER_IMAGE_ISAAC") or "").strip()
+        if override:
+            return override
+        if default.endswith(":phase3"):
+            return default[: -len("phase3")] + "isaac"
+        return default
+    return default
+
+
 def _configure_sdk(api_key: str | None = None) -> Any:
     import runpod
 
@@ -287,6 +310,12 @@ def create_training_pod(
         pod_env["ROBOLAB_GENESIS_GPU"] = (
             (os.environ.get("ROBOLAB_GENESIS_GPU") or "1").strip() or "1"
         )
+    sim_key = (cfg.sim or "").strip().lower()
+    if sim_key in {"isaaclab", "isaac_sim"}:
+        # Belt-and-suspenders: image should already set this; force thin for COMPLETE path.
+        pod_env["ROBOLAB_ISAAC_MODE"] = (
+            (os.environ.get("ROBOLAB_ISAAC_MODE") or "thin").strip() or "thin"
+        )
 
     if not pod_env["WANDB_API_KEY"]:
         raise RunPodConfigError(
@@ -296,6 +325,8 @@ def create_training_pod(
     # Network volumes are DC-scoped; pods must launch in the same data center.
     # Default EU-RO-1 matches the user's robolab-workspace volume (1hyuaan8i2).
     data_center_id = (os.environ.get("RUNPOD_DATA_CENTER_ID") or "EU-RO-1").strip() or None
+
+    image_name = worker_image_for_sim(sim_key, env_bundle["ROBOLAB_WORKER_IMAGE"])
 
     preferred = cfg.gpu_type or DEFAULT_GPU_FALLBACKS[0]
     last_err: Exception | None = None
@@ -307,7 +338,7 @@ def create_training_pod(
                 hourly = query_hourly_rate(gpu_type_id, cloud_type=rate_cloud)
                 create_kwargs: dict[str, Any] = {
                     "name": f"robolab-{run_id}",
-                    "image_name": env_bundle["ROBOLAB_WORKER_IMAGE"],
+                    "image_name": image_name,
                     "gpu_type_id": gpu_type_id,
                     "cloud_type": cloud_type,
                     "gpu_count": 1,

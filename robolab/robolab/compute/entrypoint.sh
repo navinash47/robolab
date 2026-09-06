@@ -150,21 +150,47 @@ except Exception:
 PY
 )
 if [[ "${SIM_NAME}" == "genesis" || "${ROBOLAB_INSTALL_GENESIS:-}" == "1" ]]; then
-  log "Installing genesis-world (optional; cached under ${UV_CACHE_DIR})"
+  log "Installing genesis-world into project venv (cache=${UV_CACHE_DIR})"
   export ROBOLAB_GENESIS_GPU="${ROBOLAB_GENESIS_GPU:-1}"
-  if ! uv pip install --python 3.11 genesis-world 2>/tmp/robolab-genesis-install.err; then
-    # Prefer project venv after sync
-    if ! uv run --package robolab pip install genesis-world 2>>/tmp/robolab-genesis-install.err; then
+  VENV_PY="${REPO_DIR}/.venv/bin/python"
+  if [[ ! -x "${VENV_PY}" ]]; then
+    report_fail "genesis install: project venv missing at ${VENV_PY} after uv sync"
+    exit 1
+  fi
+  # Must install into the same interpreter `uv run --package robolab` uses.
+  # Plain `uv pip install --python 3.11` often lands outside .venv → false "missing package".
+  GENESIS_ARGS=(genesis-world)
+  if [[ -n "${ROBOLAB_GENESIS_WHEEL_DIR:-}" && -d "${ROBOLAB_GENESIS_WHEEL_DIR}" ]]; then
+    GENESIS_ARGS=(--find-links "${ROBOLAB_GENESIS_WHEEL_DIR}" genesis-world)
+    log "Using wheel dir ${ROBOLAB_GENESIS_WHEEL_DIR}"
+  fi
+  if ! uv pip install --python "${VENV_PY}" "${GENESIS_ARGS[@]}" 2>/tmp/robolab-genesis-install.err; then
+    if ! "${VENV_PY}" -m pip install "${GENESIS_ARGS[@]}" 2>>/tmp/robolab-genesis-install.err; then
       tail -c 1200 /tmp/robolab-genesis-install.err > /tmp/robolab-genesis-install.tail || true
       report_fail "genesis-world install failed: $(tr '\n' ' ' </tmp/robolab-genesis-install.tail | tr -cd '[:print:] ')"
       exit 1
     fi
   fi
+  if ! "${VENV_PY}" -c "import genesis" 2>/tmp/robolab-genesis-import.err; then
+    tail -c 800 /tmp/robolab-genesis-import.err > /tmp/robolab-genesis-import.tail || true
+    report_fail "genesis-world installed but import genesis failed: $(tr '\n' ' ' </tmp/robolab-genesis-import.tail | tr -cd '[:print:] ')"
+    exit 1
+  fi
+  log "genesis import OK"
 fi
 if [[ "${SIM_NAME}" == "isaaclab" || "${SIM_NAME}" == "isaac_sim" ]]; then
-  # Isaac is multi-GB — not auto-installed. Fail fast with pointer (adapter is still a stub).
-  report_fail "sim=${SIM_NAME} requires NVIDIA Isaac on Linux GPU. This worker image does not bake Isaac (multi-GB). See docs/ISAAC_INSTALL.md — approve a separate :isaac image before rebuild. Mac cannot run Isaac."
-  exit 1
+  # Full Omniverse bake is optional. :isaac image sets ROBOLAB_ISAAC_MODE=thin for
+  # real Gymnasium wall_follow COMPLETE runs without multi-GB Isaac Sim.
+  ISAAC_MODE="${ROBOLAB_ISAAC_MODE:-}"
+  case "${ISAAC_MODE}" in
+    thin|compat|1|true|yes|native)
+      log "Isaac sim=${SIM_NAME} mode=${ISAAC_MODE} — proceeding"
+      ;;
+    *)
+      report_fail "sim=${SIM_NAME} requires ROBOLAB_WORKER_IMAGE_ISAAC (:isaac) with ROBOLAB_ISAAC_MODE=thin|native. See docs/ISAAC_INSTALL.md. Mac cannot run Isaac."
+      exit 1
+      ;;
+  esac
 fi
 
 log "Ensuring xvfb/glfw for headless MuJoCo"
