@@ -289,15 +289,18 @@ export default function App() {
   }, [searchInput]);
 
   const refresh = useCallback(async () => {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 12_000);
     try {
+      const signal = controller.signal;
       const [budgetRes, experimentsRes, wandbRes, archsRes, simsRes, tasksRes] =
         await Promise.all([
-          fetch("/api/budget"),
-          fetch("/api/experiments"),
-          fetch("/api/wandb/status"),
-          fetch("/api/archs"),
-          fetch("/api/sims"),
-          fetch("/api/tasks"),
+          fetch("/api/budget", { signal }),
+          fetch("/api/experiments", { signal }),
+          fetch("/api/wandb/status", { signal }),
+          fetch("/api/archs", { signal }),
+          fetch("/api/sims", { signal }),
+          fetch("/api/tasks", { signal }),
         ]);
       if (!budgetRes.ok || !experimentsRes.ok) {
         throw new Error(
@@ -334,11 +337,17 @@ export default function App() {
       }
       setError(null);
     } catch (err) {
+      const timedOut =
+        err instanceof DOMException && err.name === "AbortError";
       setError(
-        err instanceof Error
-          ? err.message
-          : "Failed to reach RoboLab API (is make dev running?)",
+        timedOut
+          ? "API unreachable (timed out). Is the backend on :8000 up? Try: launchctl kickstart -k gui/$(id -u)/com.robolab.api8000"
+          : err instanceof Error
+            ? err.message
+            : "Failed to reach RoboLab API (is :8000 up?)",
       );
+    } finally {
+      window.clearTimeout(timeoutId);
     }
   }, []);
 
@@ -1395,9 +1404,16 @@ export default function App() {
                     <tr>
                       <td
                         colSpan={10}
-                        className="px-4 py-16 text-center text-[var(--muted)]"
+                        className={`px-4 py-16 text-center ${
+                          error ? "text-red-800" : "text-[var(--muted)]"
+                        }`}
+                        data-testid={
+                          error ? "experiments-load-error" : "experiments-loading"
+                        }
                       >
-                        Loading…
+                        {error
+                          ? `Can't load experiments — ${error}`
+                          : "Loading…"}
                       </td>
                     </tr>
                   ) : displayedRuns.length === 0 ? (
