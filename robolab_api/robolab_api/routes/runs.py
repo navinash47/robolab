@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import signal
 import uuid
 from collections.abc import AsyncIterable
 from datetime import datetime, timezone
@@ -24,7 +25,7 @@ from robolab.compute.runpod import (
     launch_runpod,
     needs_remote_render,
 )
-from robolab.core.run import RunConfig, RunStatus
+from robolab.core.run import TERMINAL_RUN_STATUSES, RunConfig, RunStatus
 from robolab_api.budget import refuse_if_over_cap
 from robolab_api.db import Pod, Run, SessionDep
 from robolab_api.failures import record_logistics_from_run
@@ -406,6 +407,9 @@ def heartbeat(run_id: str, body: HeartbeatBody, session: SessionDep) -> dict:
     run = session.get(Run, run_id)
     if not run:
         raise HTTPException(404, f"Run {run_id} not found")
+    # Never revive a terminal run (especially ABORTED) from a late worker heartbeat.
+    if run.status in TERMINAL_RUN_STATUSES:
+        return {"ok": True, "ignored": True, "status": run.status}
     run.step = body.step
     run.total_steps = body.total or run.total_steps
     if body.mean_return is not None:
@@ -432,11 +436,66 @@ def heartbeat(run_id: str, body: HeartbeatBody, session: SessionDep) -> dict:
     return {"ok": True}
 
 
+@router.post("/{run_id}/abort")
+def abort_run(run_id: str, session: SessionDep) -> dict:
+    """Abruptly stop a run: terminate RunPod pod / local pid, status=ABORTED."""
+    run = session.get(Run, run_id)
+    if not run:
+        raise HTTPException(404, f"Run {run_id} not found")
+    if run.status == RunStatus.ABORTED.value:
+        return {"ok": True, "status": RunStatus.ABORTED.value, "already": True}
+    if run.status in TERMINAL_RUN_STATUSES:
+        raise HTTPException(
+            400,
+            f"Cannot abort terminal status {run.status}",
+        )
+    if run.status not in {
+        RunStatus.QUEUED.value,
+        RunStatus.PROVISIONING.value,
+        RunStatus.RUNNING.value,
+    }:
+        raise HTTPException(400, f"Cannot abort status {run.status}")
+
+    # Stop local trainer subprocess if any.
+    if run.pid:
+        try:
+            os.kill(int(run.pid), signal.SIGTERM)
+        except OSError as exc:
+            logger.info("abort: local pid %s already gone (%s)", run.pid, exc)
+        run.pid = None
+
+    # Terminate RunPod pod if mapped (best-effort; may already be gone).
+    if run.pod_id and run.compute == "runpod":
+        try:
+            from robolab.compute.runpod import terminate_pod
+
+            terminate_pod(run.pod_id)
+        except Exception as exc:
+            logger.warning(
+                "abort: terminate_pod(%s) for run %s failed: %s",
+                run.pod_id,
+                run.id,
+                exc,
+            )
+
+    now = datetime.now(timezone.utc)
+    run.status = RunStatus.ABORTED.value
+    run.error = "aborted by user"
+    run.updated_at = now
+    _settle_runpod_cost(session, run, reason="abort:user")
+    session.add(run)
+    session.commit()
+    session.refresh(run)
+    return {"ok": True, "status": RunStatus.ABORTED.value, "run": _run_to_dict(run)}
+
+
 @router.post("/{run_id}/complete")
 def complete(run_id: str, body: CompleteBody, session: SessionDep) -> dict:
     run = session.get(Run, run_id)
     if not run:
         raise HTTPException(404, f"Run {run_id} not found")
+    if run.status == RunStatus.ABORTED.value:
+        return {"ok": True, "ignored": True, "status": run.status}
     run.status = RunStatus.COMPLETE.value
     if body.wandb_url:
         run.wandb_url = body.wandb_url
@@ -486,6 +545,9 @@ def fail(run_id: str, body: FailBody, session: SessionDep) -> dict:
         session.add(run)
         session.commit()
         return {"ok": True, "routed": "video-fail"}
+    # Keep ABORTED sticky — late worker /fail must not overwrite user abort.
+    if run.status == RunStatus.ABORTED.value:
+        return {"ok": True, "ignored": True, "status": run.status}
     # Keep a more specific error if one is already recorded (entrypoint fallback
     # used to overwrite trainer/W&B detail with a generic exit message).
     existing = (run.error or "").strip()
@@ -761,10 +823,6 @@ async def run_events(run_id: str) -> AsyncIterable[ProgressEvent]:
             if idle_rounds % 5 == 0:
                 yield event
 
-        if event.status in {
-            RunStatus.COMPLETE.value,
-            RunStatus.FAILED.value,
-            RunStatus.KILLED_BY_WATCHDOG.value,
-        }:
+        if event.status in TERMINAL_RUN_STATUSES:
             return
         await asyncio.sleep(1.0)

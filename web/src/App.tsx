@@ -135,6 +135,8 @@ function statusClass(status: string): string {
     case "QUEUED":
     case "PROVISIONING":
       return "bg-sky-100 text-sky-800";
+    case "ABORTED":
+      return "bg-amber-100 text-amber-900";
     case "FAILED":
     case "KILLED_BY_WATCHDOG":
       return "bg-red-100 text-red-800";
@@ -260,6 +262,7 @@ export default function App() {
   const [compareData, setCompareData] = useState<CompareResponse | null>(null);
   const [comparing, setComparing] = useState(false);
   const [renderingId, setRenderingId] = useState<string | null>(null);
+  const [abortingId, setAbortingId] = useState<string | null>(null);
   const [flaggingId, setFlaggingId] = useState<string | null>(null);
   const [detailId, setDetailId] = useState<string | null>(null);
   const [searchInput, setSearchInput] = useState("");
@@ -440,7 +443,8 @@ export default function App() {
           if (
             data.status === "COMPLETE" ||
             data.status === "FAILED" ||
-            data.status === "KILLED_BY_WATCHDOG"
+            data.status === "KILLED_BY_WATCHDOG" ||
+            data.status === "ABORTED"
           ) {
             es.close();
             map.delete(data.id);
@@ -720,6 +724,39 @@ export default function App() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Render failed");
       setRenderingId(null);
+    }
+  }
+
+  async function abortRun(run: RunRow) {
+    const ok = window.confirm(
+      `Abort run ${run.name}?\n\nThis terminates any RunPod pod / local process and sets status to ABORTED.`,
+    );
+    if (!ok) return;
+    setAbortingId(run.id);
+    setError(null);
+    try {
+      const res = await fetch(`/api/runs/${run.id}/abort`, { method: "POST" });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`POST /api/runs/${run.id}/abort failed (${res.status}): ${text}`);
+      }
+      const data = (await res.json()) as { run?: RunRow; status?: string };
+      if (data.run) {
+        setRuns((prev) => prev.map((r) => (r.id === run.id ? { ...r, ...data.run } : r)));
+      } else {
+        setRuns((prev) =>
+          prev.map((r) =>
+            r.id === run.id
+              ? { ...r, status: data.status || "ABORTED", error: "aborted by user" }
+              : r,
+          ),
+        );
+      }
+      void refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Abort failed");
+    } finally {
+      setAbortingId(null);
     }
   }
 
@@ -1702,6 +1739,18 @@ export default function App() {
                                 </span>
                               ) : null}
                             </div>
+                          ) : r.status === "RUNNING" ||
+                            r.status === "PROVISIONING" ||
+                            r.status === "QUEUED" ? (
+                            <button
+                              type="button"
+                              data-testid={`abort-run-${r.id}`}
+                              disabled={abortingId === r.id}
+                              onClick={() => void abortRun(r)}
+                              className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-900 hover:bg-amber-100 disabled:opacity-40"
+                            >
+                              {abortingId === r.id ? "Aborting…" : "Abort"}
+                            </button>
                           ) : (
                             <span className="text-[var(--muted)]">—</span>
                           )}

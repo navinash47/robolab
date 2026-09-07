@@ -16,6 +16,18 @@ class RunStatus(str, Enum):
     COMPLETE = "COMPLETE"
     FAILED = "FAILED"
     KILLED_BY_WATCHDOG = "KILLED_BY_WATCHDOG"
+    ABORTED = "ABORTED"
+
+
+# Terminal statuses: watchdog / SSE / heartbeat must not revive these.
+TERMINAL_RUN_STATUSES: frozenset[str] = frozenset(
+    {
+        RunStatus.COMPLETE.value,
+        RunStatus.FAILED.value,
+        RunStatus.KILLED_BY_WATCHDOG.value,
+        RunStatus.ABORTED.value,
+    }
+)
 
 
 class DomainParams(BaseModel):

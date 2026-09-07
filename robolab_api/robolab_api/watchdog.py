@@ -19,7 +19,7 @@ from typing import Any, Literal
 
 from sqlmodel import Session, select
 
-from robolab.core.run import RunStatus
+from robolab.core.run import TERMINAL_RUN_STATUSES, RunStatus
 from robolab_api.db import CostLedger, Pod, Run, engine
 
 logger = logging.getLogger("robolab.watchdog")
@@ -325,7 +325,7 @@ def finalize_cost(
         if pod_row.terminated_at is None and reason.startswith("kill"):
             pod_row.terminated_at = now
             pod_row.status = "TERMINATED"
-        elif reason.startswith("complete") or reason.startswith("fail"):
+        elif reason.startswith(("complete", "fail", "abort")):
             pod_row.terminated_at = now
             pod_row.status = "TERMINATED"
     session.add(run)
@@ -549,11 +549,7 @@ def sweep_once() -> list[str]:
                 )
                 # Finished training runs must never have cost rewritten or status
                 # flipped by a short-lived render pod.
-                if run.status in {
-                    RunStatus.COMPLETE.value,
-                    RunStatus.FAILED.value,
-                    RunStatus.KILLED_BY_WATCHDOG.value,
-                }:
+                if run.status in TERMINAL_RUN_STATUSES:
                     if is_render_pod and run.video_status == "RENDERING":
                         started = (
                             _aware(pod_row.started_at if pod_row else None) or now
