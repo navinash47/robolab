@@ -63,8 +63,12 @@ export const BUILTIN_ARCH_META: Record<BuiltinArchKey, ArchMeta> = {
   },
 };
 
-export const ARCH_PAGE_SIZES = [10, 20, 50] as const;
-export type ArchPageSize = (typeof ARCH_PAGE_SIZES)[number];
+/** Shared list page sizes (Experiments + Architectures). */
+export const PAGE_SIZES = [10, 20, 50] as const;
+export type PageSize = (typeof PAGE_SIZES)[number];
+/** @deprecated Prefer PAGE_SIZES — kept for ArchitecturesList imports. */
+export const ARCH_PAGE_SIZES = PAGE_SIZES;
+export type ArchPageSize = PageSize;
 
 /** Fallback hyperparams when /api/archs defaults are not yet loaded. */
 export const BUILTIN_DEFAULT_CFG: Record<string, Record<string, unknown>> = {

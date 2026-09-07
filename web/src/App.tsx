@@ -19,7 +19,7 @@ import {
   type SortKey,
 } from "./experimentsQuery";
 import { ArchitecturesList } from "./ArchitecturesList";
-import { builtinMeta } from "./archMeta";
+import { builtinMeta, PAGE_SIZES, type PageSize } from "./archMeta";
 
 type Budget = {
   budget_usd_cap: number;
@@ -241,6 +241,8 @@ export default function App() {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [filters, setFilters] = useState<ExperimentFilters>(EMPTY_FILTERS);
   const [sortKey, setSortKey] = useState<SortKey>("created_desc");
+  const [expPageSize, setExpPageSize] = useState<PageSize>(10);
+  const [expPage, setExpPage] = useState(0);
   const [timestepMode, setTimestepMode] = useState<"preset" | "custom">("preset");
   const [form, setForm] = useState({
     compute: "local",
@@ -696,6 +698,33 @@ export default function App() {
     () => queryExperiments(runs, debouncedSearch, filters, sortKey),
     [runs, debouncedSearch, filters, sortKey],
   );
+
+  const expTotalPages = Math.max(1, Math.ceil(displayedRuns.length / expPageSize));
+  const expPageClamped = Math.min(expPage, expTotalPages - 1);
+  const pagedRuns = useMemo(
+    () =>
+      displayedRuns.slice(
+        expPageClamped * expPageSize,
+        expPageClamped * expPageSize + expPageSize,
+      ),
+    [displayedRuns, expPageClamped, expPageSize],
+  );
+  const expFrom =
+    displayedRuns.length === 0 ? 0 : expPageClamped * expPageSize + 1;
+  const expTo = Math.min(
+    displayedRuns.length,
+    (expPageClamped + 1) * expPageSize,
+  );
+
+  useEffect(() => {
+    setExpPage(0);
+  }, [debouncedSearch, filters, sortKey, expPageSize]);
+
+  useEffect(() => {
+    if (expPage > expTotalPages - 1) {
+      setExpPage(Math.max(0, expTotalPages - 1));
+    }
+  }, [expPage, expTotalPages]);
 
   const filterOptions = useMemo(
     () => ({
@@ -1187,6 +1216,23 @@ export default function App() {
                   ))}
                 </select>
               </label>
+              <label className="text-sm">
+                <span className="mb-1 block text-[var(--muted)]">Per page</span>
+                <select
+                  className="rounded border border-[var(--border)] bg-white px-3 py-2"
+                  value={expPageSize}
+                  onChange={(e) =>
+                    setExpPageSize(Number(e.target.value) as PageSize)
+                  }
+                  data-testid="experiments-page-size"
+                >
+                  {PAGE_SIZES.map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+              </label>
               {hasQueryOrFilters ? (
                 <button
                   type="button"
@@ -1360,7 +1406,7 @@ export default function App() {
                       </td>
                     </tr>
                   ) : (
-                    displayedRuns.map((r) => (
+                    pagedRuns.map((r) => (
                       <tr
                         key={r.id}
                         className="border-b border-[var(--border)] last:border-0"
@@ -1526,6 +1572,42 @@ export default function App() {
               </table>
             </div>
 
+            {displayedRuns.length > 0 ? (
+              <div
+                className="mt-3 flex flex-wrap items-center justify-between gap-3 text-sm text-[var(--muted)]"
+                data-testid="experiments-pager"
+              >
+                <span>
+                  Showing {expFrom}–{expTo} of {displayedRuns.length}
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    className="rounded border border-[var(--border)] px-2.5 py-1 disabled:opacity-40"
+                    disabled={expPageClamped <= 0}
+                    onClick={() => setExpPage((p) => Math.max(0, p - 1))}
+                    data-testid="experiments-page-prev"
+                  >
+                    Prev
+                  </button>
+                  <span>
+                    Page {expPageClamped + 1} / {expTotalPages}
+                  </span>
+                  <button
+                    type="button"
+                    className="rounded border border-[var(--border)] px-2.5 py-1 disabled:opacity-40"
+                    disabled={expPageClamped >= expTotalPages - 1}
+                    onClick={() =>
+                      setExpPage((p) => Math.min(expTotalPages - 1, p + 1))
+                    }
+                    data-testid="experiments-page-next"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
             {detailRun && (
               <div
                 ref={detailRef}
@@ -1672,7 +1754,19 @@ export default function App() {
 
         {view === "architectures" && (
           <div data-testid="architectures-view">
-            <div className="mb-4">
+            <ArchitecturesList
+              archs={archs}
+              archDefaults={archDefaults}
+              savedArchs={savedArchs}
+              onUse={(archValue) => {
+                setForm((f) => ({ ...f, arch: archValue }));
+                setShowNewRun(true);
+                setView("experiments");
+              }}
+              onDeleteSaved={(id) => void deleteArchitecture(id)}
+            />
+
+            <div className="mb-4 mt-10">
               <h2 className="text-lg font-medium text-[var(--text)]">Architecture Builder</h2>
               <p className="text-sm text-[var(--muted)]">
                 Dial hyperparameters for KAF / GPKAN / FAN (arXiv:2502.06018 family), save a named
@@ -1890,18 +1984,6 @@ export default function App() {
                 </button>
               </div>
             </div>
-
-            <ArchitecturesList
-              archs={archs}
-              archDefaults={archDefaults}
-              savedArchs={savedArchs}
-              onUse={(archValue) => {
-                setForm((f) => ({ ...f, arch: archValue }));
-                setShowNewRun(true);
-                setView("experiments");
-              }}
-              onDeleteSaved={(id) => void deleteArchitecture(id)}
-            />
           </div>
         )}
 
