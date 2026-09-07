@@ -60,25 +60,6 @@ def _playback_step_budget(task: TaskSpec, fps: int) -> int:
     return int(task.max_steps)
 
 
-def _robot_xy_yaw(base) -> tuple[float, float, float] | None:
-    """Best-effort pose read across MuJoCo / PyBullet / Genesis adapters."""
-    if hasattr(base, "data") and hasattr(base.data, "qpos"):
-        q = base.data.qpos
-        yaw = float(base._yaw()) if hasattr(base, "_yaw") else 0.0
-        return float(q[0]), float(q[1]), yaw
-    if hasattr(base, "_robot_id") and hasattr(base, "_cid"):
-        import pybullet as p
-
-        pos, orn = p.getBasePositionAndOrientation(
-            base._robot_id, physicsClientId=base._cid
-        )
-        yaw = float(p.getEulerFromQuaternion(orn)[2])
-        return float(pos[0]), float(pos[1]), yaw
-    if hasattr(base, "_xy") and hasattr(base, "_yaw"):
-        return float(base._xy[0]), float(base._xy[1]), float(base._yaw)
-    return None
-
-
 def _set_robot_xy_yaw(base, x: float, y: float, yaw: float) -> bool:
     """Snap planar pose without env.reset (keeps RecordVideo on one episode)."""
     import numpy as np
@@ -118,15 +99,32 @@ def _set_robot_xy_yaw(base, x: float, y: float, yaw: float) -> bool:
     return False
 
 
-def _lap_wall_follow_if_needed(base, *, end_x: float, spawn_x: float) -> None:
-    """Before the far wall, wrap +x back to spawn so long renders fill RENDER_SECONDS."""
-    pose = _robot_xy_yaw(base)
-    if pose is None:
-        return
-    x, y, yaw = pose
-    if x <= float(end_x) - 0.5:
-        return
-    _set_robot_xy_yaw(base, float(spawn_x), y, yaw)
+def _sample_wall_follow_start(rng) -> tuple[float, float, float]:
+    """Random free-space pose along the corridor (no fixed origin every Render)."""
+    # Walls at y=±0.7, end wall ~x=12.5; keep clear of walls and leave runway.
+    x = float(rng.uniform(0.4, 8.5))
+    y = float(rng.uniform(-0.35, 0.35))
+    yaw = float(rng.uniform(-0.4, 0.4))
+    return x, y, yaw
+
+
+def _refresh_obs_after_pose(base):
+    """Recompute observation after an out-of-band pose snap (MuJoCo / PyBullet / Genesis)."""
+    if hasattr(base, "_lidar") and hasattr(base, "_pack"):
+        ranges = base._lidar()
+        return base._pack(ranges, 0.0, 0.0)
+    if hasattr(base, "_lidar_ranges") and hasattr(base, "_pack"):
+        ranges = base._lidar_ranges()
+        return base._pack(ranges, 0.0, 0.0)
+    return None, None
+
+
+def _render_seed(run_id: str, fallback: int = 0) -> int:
+    """Unique seed per Render click (run id + wall clock), not the training seed."""
+    import hashlib
+
+    raw = f"{run_id}:{time.time_ns()}".encode()
+    return int(hashlib.sha256(raw).hexdigest()[:8], 16) ^ int(fallback)
 
 
 def configure_mujoco_gl() -> str:
@@ -279,13 +277,15 @@ def record_playback_mp4(
     video_dir: Path,
     seed: int = 0,
 ) -> Path:
-    """Create a fresh render env, wrap RecordVideo, roll out one full episode.
+    """Create a fresh render env, wrap RecordVideo, roll out one continuous episode.
 
-    wall_follow: records WALL_FOLLOW_RENDER_SECONDS at env render_fps (laps the
-    corridor so the far wall does not end the clip early). Other tasks: full
-    episode until task.max_steps / natural termination.
+    wall_follow: records WALL_FOLLOW_RENDER_SECONDS at env render_fps as one
+    continuous rollout from a randomized corridor start (no mid-clip teleport /
+    lap back to origin). Other tasks: full episode until task.max_steps /
+    natural termination.
     video_length=0 ⇒ Gymnasium RecordVideo keeps every frame of the episode.
     """
+    import numpy as np
     from gymnasium.wrappers import RecordVideo
     from stable_baselines3 import PPO
 
@@ -298,22 +298,14 @@ def record_playback_mp4(
     task = get_task(cfg.task)
     robot = sim.load_robot(urdf_path(cfg.robot), robot=cfg.robot)
 
-    # Playback: do not abort on scrape collision mid-wall.
-    end_x = float((task.meta or {}).get("corridor_end_x", 12.0))
-    spawn_x = 0.3
-    try:
-        from robolab.tasks.worlds import layout_for_task
-
-        spawn_x = float(layout_for_task(task.name).spawn_xy[0])
-    except Exception:
-        pass
     orig_termination = task.termination
     orig_max_steps = int(task.max_steps)
     long_wall_follow = task.name == "wall_follow"
 
     def _playback_termination(info: dict) -> bool:
         if long_wall_follow:
-            # Duration is owned by max_steps / RENDER_SECONDS (laps handle end_x).
+            # Duration is owned by max_steps / RENDER_SECONDS — never terminate
+            # early on corridor end_x / scrape (would look like a clip cut).
             return False
         # Other tasks: keep natural success/fail termination (not corridor end_x).
         if orig_termination is not None:
@@ -341,22 +333,25 @@ def record_playback_mp4(
         model = PPO.load(str(ckpt_path), device="cpu")
         try:
             obs, _info = env.reset(seed=seed)
+            base = env.unwrapped
+            if long_wall_follow:
+                rng = np.random.default_rng(int(seed) & 0xFFFFFFFF)
+                sx, sy, syaw = _sample_wall_follow_start(rng)
+                if _set_robot_xy_yaw(base, sx, sy, syaw):
+                    fresh, _ = _refresh_obs_after_pose(base)
+                    if fresh is not None:
+                        obs = fresh
             terminated = truncated = False
             steps = 0
             # Hard cap = budget (+ slack). Truncation is owned by the env
             # (steps >= task.max_steps); this loop must not cut earlier.
             max_steps = budget + 50
-            base = env.unwrapped
             while not (terminated or truncated) and steps < max_steps:
                 action, _ = model.predict(obs, deterministic=True)
                 if long_wall_follow:
                     action = _stabilize_wall_follow_action(obs, action)
                 obs, _reward, terminated, truncated, _info = env.step(action)
                 steps += 1
-                if long_wall_follow:
-                    _lap_wall_follow_if_needed(
-                        base, end_x=end_x, spawn_x=spawn_x
-                    )
         finally:
             env.close()
     finally:
@@ -486,7 +481,7 @@ def render_run(
             cfg=cfg,
             ckpt_path=ckpt,
             video_dir=video_dir,
-            seed=int(cfg.trainer.seed),
+            seed=_render_seed(run_id, fallback=int(cfg.trainer.seed)),
         )
         caption = f"{cfg.task} / {cfg.arch} / {cfg.sim} playback"
         wb_url = upload_wandb_video(wandb_url=wandb_url, mp4_path=mp4, caption=caption)
