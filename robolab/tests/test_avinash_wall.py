@@ -22,6 +22,7 @@ from robolab.archs.avinash_wall import (
     discrete_to_continuous,
     discretize_distance,
     epsilon_for_episode,
+    epsilon_for_progress,
     pdf_reward,
     state_index,
 )
@@ -73,12 +74,24 @@ def test_pdf_reward_cases():
 
 
 def test_epsilon_schedule_pdf():
+    """Course PDF episode schedule (reference only; trainers use progress)."""
     assert epsilon_for_episode(0) == pytest.approx(1.0)
     assert epsilon_for_episode(1) == pytest.approx(0.95)
     assert epsilon_for_episode(18) == pytest.approx(0.1)
     assert epsilon_for_episode(100) == pytest.approx(0.1)
     assert epsilon_for_episode(199) == pytest.approx(0.1)
     assert epsilon_for_episode(200) == pytest.approx(0.0)
+
+
+def test_epsilon_for_progress_scales_to_total_timesteps():
+    total = 1_000_000
+    assert epsilon_for_progress(0, total) == pytest.approx(1.0)
+    mid = epsilon_for_progress(total // 2, total)
+    assert mid == pytest.approx(0.525)  # midpoint of 1.0 → 0.05
+    assert epsilon_for_progress(total, total) == pytest.approx(0.05)
+    # Custom end still linear over full budget (e.g. 2M run).
+    assert epsilon_for_progress(1_000_000, 2_000_000, epsilon_end=0.05) == pytest.approx(0.525)
+    assert epsilon_for_progress(2_000_000, 2_000_000, epsilon_end=0.05) == pytest.approx(0.05)
 
 
 def test_actions_constant_linear_and_signed_yaw():

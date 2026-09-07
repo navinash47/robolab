@@ -4,9 +4,11 @@ Tabular wall-following policy from the Robotics course project report
 **P2_D3** (Q-learning vs SARSA). Registered as builtin architecture
 `avinash_wall` (UI label: **Avinash Wall Follow**).
 
-The same PDF **task mode** (27-state bins for reward, 3 discrete actions, ε schedule)
+The same PDF **task mode** (27-state bins for reward, 3 discrete actions)
 is also available as **function-approx Q-learning** when New Run sets
 **Algo = Q-learning** with Arch = `mlp` | `kan` | `kaf` | `gpkan` | `fan`.
+Exploration ε follows training progress (`step / total_timesteps`), not a
+fixed episode count — so a custom 2M-step run decays smoothly over the full run.
 
 ## World layout (largemaze)
 
@@ -35,7 +37,7 @@ on the tabular path via `arch_cfg.algorithm: sarsa`.
 | Actions | Turn left / Forward / Turn right; **v=0.3 m/s**, **ω=±0.7 or 0** |
 | Reward | +20 right=medium; +15 turn-left when front near; −8 front near otherwise; −5 right=far; −1 right=near |
 | α / γ | 0.1 / 1.0 (tabular α; neural FA uses Adam `trainer.lr`) |
-| ε | 1.0 → 0.1 by −0.05/episode, hold to episode 200, then 0 |
+| ε | **RoboLab default:** linear **1.0 → 0.05** over **100%** of `total_timesteps` (any custom budget, e.g. 2M). PDF reference schedule was episode-based (1.0→0.1 by −0.05/ep, hold to ep 200, then 0) and is not used by trainers. |
 | Episode | 1200 steps (or env terminal) |
 
 RoboLab maps 5-ray lidar front / right / left beams to the three PDF sectors.
@@ -61,7 +63,8 @@ set `obs_mode: onehot27` to feed a one-hot of the PDF state index instead.
    - Arch: **Avinash Wall Follow (`avinash_wall`)** *or* KAF/KAN/… with Algo **Q-learning**
    - Task: **wall_follow**
    - Sim: **mujoco** or **pybullet** (gate sims)
-   - Timesteps: **2000–5000** for smoke; full PDF budget is ~200×1200 ≈ **240k** steps — ask before long trains.
+   - Timesteps: **2000–5000** for smoke; full PDF budget is ~200×1200 ≈ **240k**
+    steps — or set any custom total (ε scales to that budget). Ask before long trains.
 3. Start run; watch Experiments until `COMPLETE`.
 
 If **Avinash Wall Follow** is missing from the Arch dropdown, restart the API

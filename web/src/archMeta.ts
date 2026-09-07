@@ -111,7 +111,7 @@ export const BUILTIN_DEFAULT_CFG: Record<string, Record<string, unknown>> = {
     alpha: 0.1,
     gamma: 1.0,
     epsilon_start: 1.0,
-    epsilon_end: 0.1,
+    epsilon_end: 0.05,
     epsilon_decay: 0.05,
     explore_episodes: 200,
     episode_max_steps: 1200,

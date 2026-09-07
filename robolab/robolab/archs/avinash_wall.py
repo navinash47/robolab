@@ -56,7 +56,8 @@ def default_cfg() -> dict[str, Any]:
         "alpha": 0.1,
         "gamma": 1.0,
         "epsilon_start": 1.0,
-        "epsilon_end": 0.1,
+        "epsilon_end": 0.05,
+        # Legacy PDF episode schedule knobs (kept for epsilon_for_episode / docs).
         "epsilon_decay": 0.05,
         "explore_episodes": 200,
         "episode_max_steps": 1200,
@@ -177,11 +178,33 @@ def epsilon_for_episode(
     epsilon_decay: float = 0.05,
     explore_episodes: int = 200,
 ) -> float:
-    """PDF ε schedule: decay by 0.05/ep until floor, hold until explore_episodes, then 0."""
+    """PDF ε schedule: decay by 0.05/ep until floor, hold until explore_episodes, then 0.
+
+    Kept for course-PDF reference / unit tests. Trainers use
+    :func:`epsilon_for_progress` so custom ``total_timesteps`` scale correctly.
+    """
     ep = int(episode)
     if ep >= int(explore_episodes):
         return 0.0
     return float(max(epsilon_end, epsilon_start - epsilon_decay * ep))
+
+
+def epsilon_for_progress(
+    step: int,
+    total_timesteps: int,
+    *,
+    epsilon_start: float = 1.0,
+    epsilon_end: float = 0.05,
+) -> float:
+    """Linear ε over the full training budget: ``start → end`` as ``step/total → 1``.
+
+    Default RoboLab schedule for any custom ``total_timesteps`` (e.g. 2M):
+    ε = 1.0 at step 0, ε = ``epsilon_end`` (0.05) at ``total_timesteps``.
+    """
+    total = max(int(total_timesteps), 1)
+    t = min(max(int(step), 0), total)
+    frac = t / float(total)
+    return float(epsilon_start + (epsilon_end - epsilon_start) * frac)
 
 
 class TabularQAgent:

@@ -20,7 +20,7 @@ import robolab.tasks  # noqa: F401
 from robolab.archs.avinash_wall import (
     TabularQAgent,
     discrete_to_continuous,
-    epsilon_for_episode,
+    epsilon_for_progress,
     pdf_reward,
     state_index,
 )
@@ -166,6 +166,8 @@ def train_avinash_wall(cfg: RunConfig, run_id: str, backend_url: str) -> dict:
         medium_max = float(arch_cfg.get("medium_max", 0.9))
         lin = float(arch_cfg.get("linear_vel", 0.3))
         ang = float(arch_cfg.get("angular_vel", 0.7))
+        eps_start = float(arch_cfg.get("epsilon_start", 1.0))
+        eps_end = float(arch_cfg.get("epsilon_end", 0.05))
 
         global_step = 0
         episode = 0
@@ -174,12 +176,11 @@ def train_avinash_wall(cfg: RunConfig, run_id: str, backend_url: str) -> dict:
         mean_ret: float | None = None
 
         while global_step < total_steps:
-            eps = epsilon_for_episode(
-                episode,
-                epsilon_start=float(arch_cfg.get("epsilon_start", 1.0)),
-                epsilon_end=float(arch_cfg.get("epsilon_end", 0.1)),
-                epsilon_decay=float(arch_cfg.get("epsilon_decay", 0.05)),
-                explore_episodes=int(arch_cfg.get("explore_episodes", 200)),
+            eps = epsilon_for_progress(
+                global_step,
+                total_steps,
+                epsilon_start=eps_start,
+                epsilon_end=eps_end,
             )
             obs, info = env.reset(seed=seed + episode)
             ranges = _ranges_from_obs_info(obs, info)
@@ -189,6 +190,12 @@ def train_avinash_wall(cfg: RunConfig, run_id: str, backend_url: str) -> dict:
             done = False
 
             while not done and global_step < total_steps:
+                eps = epsilon_for_progress(
+                    global_step,
+                    total_steps,
+                    epsilon_start=eps_start,
+                    epsilon_end=eps_end,
+                )
                 action = discrete_to_continuous(a, linear_vel=lin, angular_vel=ang)
                 obs, _r_env, terminated, truncated, info = env.step(action)
                 # PDF reward R(s, a) from pre-transition state + discrete action.
@@ -198,13 +205,28 @@ def train_avinash_wall(cfg: RunConfig, run_id: str, backend_url: str) -> dict:
                 done = bool(terminated or truncated)
 
                 if agent.algorithm == "sarsa":
-                    a_next = agent.select_action(s_next, 0.0 if done else eps)
+                    if done:
+                        a_next = a
+                    else:
+                        eps_next = epsilon_for_progress(
+                            global_step + 1,
+                            total_steps,
+                            epsilon_start=eps_start,
+                            epsilon_end=eps_end,
+                        )
+                        a_next = agent.select_action(s_next, eps_next)
                     agent.update_sarsa(s, a, r, s_next, a_next, done)
                     a = a_next
                 else:
                     agent.update_q_learning(s, a, r, s_next, done)
                     if not done:
-                        a = agent.select_action(s_next, eps)
+                        eps_next = epsilon_for_progress(
+                            global_step + 1,
+                            total_steps,
+                            epsilon_start=eps_start,
+                            epsilon_end=eps_end,
+                        )
+                        a = agent.select_action(s_next, eps_next)
 
                 s = s_next
                 ep_ret += r
@@ -229,15 +251,14 @@ def train_avinash_wall(cfg: RunConfig, run_id: str, backend_url: str) -> dict:
                             "param_count": param_count,
                         },
                     )
-                    if wandb_run is not None and mean_ret is not None:
-                        wandb_run.log(
-                            {
-                                "rollout/ep_rew_mean": mean_ret,
-                                "train/epsilon": eps,
-                                "train/episode": episode,
-                            },
-                            step=global_step,
-                        )
+                    if wandb_run is not None:
+                        payload: dict[str, Any] = {
+                            "train/epsilon": eps,
+                            "train/episode": episode,
+                        }
+                        if mean_ret is not None:
+                            payload["rollout/ep_rew_mean"] = mean_ret
+                        wandb_run.log(payload, step=global_step)
 
             recent_returns.append(ep_ret)
             if wandb_run is not None:

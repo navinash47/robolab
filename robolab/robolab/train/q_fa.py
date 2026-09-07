@@ -1,7 +1,8 @@
 """Function-approx Q-learning for wall_follow using builtin arch towers.
 
-Same PDF discrete actions / reward / ε schedule as ``avinash_wall`` tabular,
-but Q(s,·) is a neural net whose feature tower is ``mlp|kan|kaf|gpkan|fan``.
+Same PDF discrete actions / reward as ``avinash_wall`` tabular; ε decays
+linearly over ``total_timesteps`` (see ``epsilon_for_progress``).
+Q(s,·) is a neural net whose feature tower is ``mlp|kan|kaf|gpkan|fan``.
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ from robolab.archs.avinash_wall import (
     N_STATES,
     default_cfg as wall_default_cfg,
     discrete_to_continuous,
-    epsilon_for_episode,
+    epsilon_for_progress,
     pdf_reward,
     state_index,
 )
@@ -400,6 +401,8 @@ def train_q_fa(cfg: RunConfig, run_id: str, backend_url: str) -> dict:
 
         lin = float(arch_cfg.get("linear_vel", 0.3))
         ang = float(arch_cfg.get("angular_vel", 0.7))
+        eps_start = float(arch_cfg.get("epsilon_start", 1.0))
+        eps_end = float(arch_cfg.get("epsilon_end", 0.05))
 
         global_step = 0
         episode = 0
@@ -410,12 +413,11 @@ def train_q_fa(cfg: RunConfig, run_id: str, backend_url: str) -> dict:
         # Continue from the initial reset used for obs_dim probing.
         obs, info = obs0, info0
         while global_step < total_steps:
-            eps = epsilon_for_episode(
-                episode,
-                epsilon_start=float(arch_cfg.get("epsilon_start", 1.0)),
-                epsilon_end=float(arch_cfg.get("epsilon_end", 0.1)),
-                epsilon_decay=float(arch_cfg.get("epsilon_decay", 0.05)),
-                explore_episodes=int(arch_cfg.get("explore_episodes", 200)),
+            eps = epsilon_for_progress(
+                global_step,
+                total_steps,
+                epsilon_start=eps_start,
+                epsilon_end=eps_end,
             )
             if episode > 0:
                 obs, info = env.reset(seed=seed + episode)
@@ -429,6 +431,12 @@ def train_q_fa(cfg: RunConfig, run_id: str, backend_url: str) -> dict:
             done = False
 
             while not done and global_step < total_steps:
+                eps = epsilon_for_progress(
+                    global_step,
+                    total_steps,
+                    epsilon_start=eps_start,
+                    epsilon_end=eps_end,
+                )
                 action = discrete_to_continuous(a, linear_vel=lin, angular_vel=ang)
                 obs, _r_env, terminated, truncated, info = env.step(action)
                 r = pdf_reward(s, a)
@@ -445,7 +453,13 @@ def train_q_fa(cfg: RunConfig, run_id: str, backend_url: str) -> dict:
                 agent.update(feat, a, r, feat_next, done)
 
                 if not done:
-                    a = agent.select_action(feat_next, eps)
+                    eps_next = epsilon_for_progress(
+                        global_step + 1,
+                        total_steps,
+                        epsilon_start=eps_start,
+                        epsilon_end=eps_end,
+                    )
+                    a = agent.select_action(feat_next, eps_next)
                 feat = feat_next
                 s = s_next
                 ep_ret += r
@@ -470,15 +484,14 @@ def train_q_fa(cfg: RunConfig, run_id: str, backend_url: str) -> dict:
                             "param_count": param_count,
                         },
                     )
-                    if wandb_run is not None and mean_ret is not None:
-                        wandb_run.log(
-                            {
-                                "rollout/ep_rew_mean": mean_ret,
-                                "train/epsilon": eps,
-                                "train/episode": episode,
-                            },
-                            step=global_step,
-                        )
+                    if wandb_run is not None:
+                        payload: dict[str, Any] = {
+                            "train/epsilon": eps,
+                            "train/episode": episode,
+                        }
+                        if mean_ret is not None:
+                            payload["rollout/ep_rew_mean"] = mean_ret
+                        wandb_run.log(payload, step=global_step)
 
             recent_returns.append(ep_ret)
             if wandb_run is not None:

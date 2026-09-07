@@ -185,7 +185,7 @@ function archCfgFor(
       alpha: 0.1,
       gamma: 1.0,
       epsilon_start: 1.0,
-      epsilon_end: 0.1,
+      epsilon_end: 0.05,
       epsilon_decay: 0.05,
       explore_episodes: 200,
       episode_max_steps: 1200,
@@ -482,11 +482,11 @@ export default function App() {
           ? "q_learning"
           : "ppo";
       const isQl = algo === "q_learning";
-      // Neural FA Q-learning shares the PDF wall-follow schedule knobs.
+      // Neural FA Q-learning: PDF wall-follow task knobs; ε scales with total_timesteps.
       const qlSchedule = {
         algorithm: "q_learning",
         epsilon_start: 1.0,
-        epsilon_end: 0.1,
+        epsilon_end: 0.05,
         epsilon_decay: 0.05,
         explore_episodes: 200,
         episode_max_steps: 1200,
