@@ -12,6 +12,20 @@ from robolab.tasks.worlds import is_wall_crash
 TARGET_DIST = 0.35
 COLLISION_DIST = 0.12
 
+# Stall/scrape shaping: tiny min_range + low |v| → bail earlier than crash.
+STALL_MIN_RANGE = 0.18  # m
+STALL_SPEED_EPS = 0.08  # m/s
+STALL_PENALTY = -3.0
+
+
+def _stall_scrape_penalty(info: dict[str, Any]) -> float:
+    """Bigger cost when scraping a nearby surface while barely moving."""
+    min_r = float(info.get("min_range", 5.0))
+    speed = abs(float(info.get("forward_speed", 0.0)))
+    if min_r < STALL_MIN_RANGE and speed < STALL_SPEED_EPS:
+        return STALL_PENALTY
+    return 0.0
+
 
 def _reward(info: dict[str, Any]) -> float:
     ranges = np.asarray(info["ranges"], dtype=np.float64)
@@ -25,7 +39,8 @@ def _reward(info: dict[str, Any]) -> float:
     forward_term = np.clip(forward / 0.6, -0.5, 1.0)
     front_penalty = -2.0 if front < 0.25 else 0.0
     crash = -5.0 if is_wall_crash(info, COLLISION_DIST) else 0.0
-    return float(1.2 * wall_term + 0.8 * forward_term + front_penalty + crash)
+    stall = _stall_scrape_penalty(info)
+    return float(1.2 * wall_term + 0.8 * forward_term + front_penalty + crash + stall)
 
 
 def _termination(info: dict[str, Any]) -> bool:

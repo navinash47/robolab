@@ -25,6 +25,7 @@ import robolab.tasks  # noqa: F401
 from robolab.core.run import RunConfig
 from robolab.core.sim import get_sim
 from robolab.core.task import get_task
+from robolab.envs import maybe_wrap_stuck_escape
 from robolab.robots.paths import urdf_path
 from robolab.train.callbacks import WandbAndHeartbeatCallback, _post_json
 from robolab.train.sb3_policy import RoboLabActorCriticPolicy
@@ -43,7 +44,8 @@ def build_env(cfg: RunConfig):
     robot = sim.load_robot(urdf_path(cfg.robot), robot=cfg.robot)
 
     def _thunk():
-        return sim.make_env(task=task, robot=robot, domain=cfg.domain, render=False)
+        env = sim.make_env(task=task, robot=robot, domain=cfg.domain, render=False)
+        return maybe_wrap_stuck_escape(env, cfg.task)
 
     return make_vec_env(
         _thunk,

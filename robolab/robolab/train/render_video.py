@@ -33,6 +33,7 @@ import robolab.tasks  # noqa: F401
 from robolab.core.run import RunConfig
 from robolab.core.sim import get_sim
 from robolab.core.task import TaskSpec, get_task
+from robolab.envs import maybe_wrap_stuck_escape
 from robolab.robots.paths import urdf_path
 from robolab.train.callbacks import _post_json
 
@@ -316,6 +317,7 @@ def record_playback_mp4(
     try:
         # FRESH env — never reuse after close / prior recording
         env = sim.make_env(task=task, robot=robot, domain=cfg.domain, render=True)
+        env = maybe_wrap_stuck_escape(env, task.name)
         fps = _env_render_fps(env)
         budget = _playback_step_budget(task, fps)
         # Env truncates on task.max_steps; align with the render budget.
