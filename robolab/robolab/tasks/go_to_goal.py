@@ -7,6 +7,7 @@ from typing import Any
 import numpy as np
 
 from robolab.core.task import ActSpec, ObsSpec, TaskSpec, register_task
+from robolab.tasks.worlds import is_wall_crash
 
 COLLISION_DIST = 0.12
 GOAL_RADIUS = 0.25
@@ -16,17 +17,16 @@ def _reward(info: dict[str, Any]) -> float:
     dist = float(info.get("dist_to_goal") or 10.0)
     yaw_err = abs(float(info.get("yaw_err") or 0.0))
     forward = float(info.get("forward_speed", 0.0))
-    min_r = float(info.get("min_range", 5.0))
     progress = np.exp(-((dist / 2.0) ** 2))
     heading = np.exp(-((yaw_err / 1.0) ** 2))
-    crash = -5.0 if min_r < COLLISION_DIST else 0.0
+    crash = -5.0 if is_wall_crash(info, COLLISION_DIST) else 0.0
     speed = 0.2 * np.clip(forward / 0.5, -0.5, 1.0)
     bonus = 2.0 if dist < GOAL_RADIUS else 0.0
     return float(1.5 * progress + 0.5 * heading + speed + crash + bonus)
 
 
 def _termination(info: dict[str, Any]) -> bool:
-    if float(info.get("min_range", 5.0)) < COLLISION_DIST:
+    if is_wall_crash(info, COLLISION_DIST):
         return True
     dist = info.get("dist_to_goal")
     return dist is not None and float(dist) < GOAL_RADIUS and bool(info.get("success"))

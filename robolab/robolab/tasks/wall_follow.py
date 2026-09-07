@@ -7,6 +7,7 @@ from typing import Any
 import numpy as np
 
 from robolab.core.task import ActSpec, ObsSpec, TaskSpec, register_task
+from robolab.tasks.worlds import is_wall_crash
 
 TARGET_DIST = 0.35
 COLLISION_DIST = 0.12
@@ -23,13 +24,12 @@ def _reward(info: dict[str, Any]) -> float:
     wall_term = np.exp(-((dist_err / 0.25) ** 2))
     forward_term = np.clip(forward / 0.6, -0.5, 1.0)
     front_penalty = -2.0 if front < 0.25 else 0.0
-    crash = -5.0 if front < COLLISION_DIST or right < COLLISION_DIST else 0.0
+    crash = -5.0 if is_wall_crash(info, COLLISION_DIST) else 0.0
     return float(1.2 * wall_term + 0.8 * forward_term + front_penalty + crash)
 
 
 def _termination(info: dict[str, Any]) -> bool:
-    ranges = np.asarray(info["ranges"], dtype=np.float64)
-    if float(ranges.min()) < COLLISION_DIST:
+    if is_wall_crash(info, COLLISION_DIST):
         return True
     pos = info.get("position")
     # Match scene.xml wall_end (~12.5); finish once past the far wall.

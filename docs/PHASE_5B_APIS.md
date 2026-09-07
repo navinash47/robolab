@@ -64,6 +64,8 @@ dists = lidar.read().distances
 
 **URDF note:** Our URDF is primitive boxes/cylinders (no mesh files) — Genesis URDF load should work. If a mesh-heavy URDF fails, document and fall back to Box proxy — blunt in TEST.
 
+**Kinematic walls:** MuJoCo / PyBullet / Genesis all set base pose each control step (contacts are overwritten). Wall solidity is enforced by shared `resolve_wall_collision` against `WorldLayout.boxes` (same boxes as PyBullet/Genesis morphs / MuJoCo scene). `info["wall_contact"]` feeds crash penalty/termination — lidar alone is not enough to stop tunneling.
+
 **Capability flags:** `urdf`, `lidar`, `optional_gpu`, `pip:genesis-world`, and `requires_install` when import fails.
 
 ## Isaac Lab / Isaac Sim (stubs)

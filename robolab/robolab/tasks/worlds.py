@@ -6,10 +6,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from robolab.robots.paths import robot_dir
 
 # Boxes: (half_extents_xyz, center_xyz, rgba)
 BoxSpec = tuple[list[float], list[float], list[float]]
+
+# Chassis is 0.30×0.24 m; circumradius ≈ 0.192. Slightly smaller keeps spawn clear
+# of thin corridor walls while still blocking wall tunneling under kinematic drive.
+ROBOT_COLLISION_RADIUS = 0.18
 
 
 @dataclass(frozen=True)
@@ -22,6 +28,126 @@ class WorldLayout:
     spawn_noise_y: float = 0.15
     spawn_noise_yaw: float = 0.15
     mujoco_scene: str = "scene.xml"
+
+
+def resolve_wall_collision(
+    xy: Any,
+    boxes: tuple[BoxSpec, ...],
+    *,
+    robot_radius: float = ROBOT_COLLISION_RADIUS,
+    iterations: int = 4,
+    prev_xy: Any | None = None,
+) -> tuple[np.ndarray, bool]:
+    """Push a disk robot out of axis-aligned wall boxes.
+
+    All gate sims drive the base kinematically (set pose each step), so engine
+    contacts never block motion. This shared resolver makes walls solid for
+    MuJoCo / PyBullet / Genesis alike.
+
+    When ``prev_xy`` is set, the motion is sub-sampled so a single large step
+    cannot tunnel through a thin wall.
+    """
+    target = np.asarray(xy, dtype=np.float64).reshape(-1).copy()
+    if prev_xy is not None:
+        prev = np.asarray(prev_xy, dtype=np.float64).reshape(-1)
+        delta = target[:2] - prev[:2]
+        dist = float(np.linalg.norm(delta))
+        step = max(robot_radius * 0.5, 1e-3)
+        n = max(1, int(np.ceil(dist / step)))
+        hit_any = False
+        cur = prev[:2].astype(np.float64).copy()
+        for i in range(1, n + 1):
+            probe = prev[:2] + (i / n) * delta
+            cur, hit = _resolve_disk_vs_boxes(
+                probe, boxes, robot_radius=robot_radius, iterations=iterations
+            )
+            hit_any = hit_any or hit
+            if hit:
+                # Stop at first contact; do not continue through the wall.
+                break
+        out = target.copy()
+        out[0], out[1] = float(cur[0]), float(cur[1])
+        return out, hit_any
+
+    pos, hit = _resolve_disk_vs_boxes(
+        target[:2], boxes, robot_radius=robot_radius, iterations=iterations
+    )
+    out = target.copy()
+    out[0], out[1] = float(pos[0]), float(pos[1])
+    return out, hit
+
+
+def _resolve_disk_vs_boxes(
+    xy: Any,
+    boxes: tuple[BoxSpec, ...],
+    *,
+    robot_radius: float,
+    iterations: int,
+) -> tuple[np.ndarray, bool]:
+    pos = np.asarray(xy, dtype=np.float64).reshape(-1).copy()
+    x, y = float(pos[0]), float(pos[1])
+    hit = False
+    r = float(robot_radius)
+    r2 = r * r
+    for _ in range(max(1, iterations)):
+        moved = False
+        for half, center, _rgba in boxes:
+            wx, wy = float(center[0]), float(center[1])
+            hx, hy = float(half[0]), float(half[1])
+            minx, maxx = wx - hx, wx + hx
+            miny, maxy = wy - hy, wy + hy
+            inside = (minx <= x <= maxx) and (miny <= y <= maxy)
+            if inside:
+                # Deep penetration / tunnel: eject through nearest face.
+                left, right = x - minx, maxx - x
+                bottom, top = y - miny, maxy - y
+                m = min(left, right, bottom, top)
+                if m == left:
+                    x = minx - r
+                elif m == right:
+                    x = maxx + r
+                elif m == bottom:
+                    y = miny - r
+                else:
+                    y = maxy + r
+                hit = True
+                moved = True
+                continue
+            cx = float(np.clip(x, minx, maxx))
+            cy = float(np.clip(y, miny, maxy))
+            dx, dy = x - cx, y - cy
+            d2 = dx * dx + dy * dy
+            if d2 >= r2:
+                continue
+            if d2 <= 1e-16:
+                # Center on a corner/edge of the AABB — nudge along +x.
+                x = maxx + r
+                hit = True
+                moved = True
+                continue
+            dist = float(np.sqrt(d2))
+            pen = r - dist
+            x += (dx / dist) * pen
+            y += (dy / dist) * pen
+            hit = True
+            moved = True
+        if not moved:
+            break
+    return np.array([x, y], dtype=np.float64), hit
+
+
+def is_wall_crash(info: dict[str, Any], collision_dist: float = 0.12) -> bool:
+    """True if kinematic wall contact or lidar reports an imminent crash."""
+    if bool(info.get("wall_contact")):
+        return True
+    if float(info.get("min_range", 5.0)) < collision_dist:
+        return True
+    ranges = info.get("ranges")
+    if ranges is not None:
+        arr = np.asarray(ranges, dtype=np.float64).reshape(-1)
+        if arr.size and float(arr.min()) < collision_dist:
+            return True
+    return False
 
 
 # --- Corridor (wall_follow) — matches historical scene.xml ---

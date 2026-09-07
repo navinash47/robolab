@@ -17,6 +17,7 @@ from robolab.tasks.worlds import (
     build_observation,
     enrich_task_info,
     layout_for_task,
+    resolve_wall_collision,
 )
 
 LIDAR_ANGLES_DEG = (0.0, 45.0, -45.0, 90.0, -90.0)
@@ -87,7 +88,11 @@ def _ensure_gs():
 
 
 class DiffDriveLidarGenesisEnv(gym.Env):
-    """Kinematic diffdrive + Genesis Lidar (5 planar rays) matching MuJoCo angles."""
+    """Kinematic diffdrive + Genesis Lidar (5 planar rays) matching MuJoCo angles.
+
+    Pose is set each step (parity with MuJoCo/PyBullet). Engine contacts are not
+    the wall barrier — ``resolve_wall_collision`` keeps layout boxes solid.
+    """
 
     metadata = {"render_modes": ["rgb_array"], "render_fps": 30}
 
@@ -109,6 +114,7 @@ class DiffDriveLidarGenesisEnv(gym.Env):
         self._w_max = 1.2
         self._steps = 0
         self._success_streak = 0
+        self._wall_contact = False
         self._control_dt = 1.0 / max(1e-6, domain.control_hz)
         self._physics_dt = self._control_dt / max(1, domain.physics_substeps)
         self._xy = np.array([*self._layout.spawn_xy], dtype=np.float64)
@@ -232,6 +238,7 @@ class DiffDriveLidarGenesisEnv(gym.Env):
             "physics_substeps": self.domain.physics_substeps,
             "control_dt": self._control_dt,
             "physics_dt": self._physics_dt,
+            "wall_contact": bool(self._wall_contact),
             **extra,
         }
         return obs.astype(np.float32), info
@@ -253,6 +260,7 @@ class DiffDriveLidarGenesisEnv(gym.Env):
             self._scene.step()
         self._steps = 0
         self._success_streak = 0
+        self._wall_contact = False
         self._path_s = 0.0
         ranges = self._lidar_ranges()
         return self._pack(ranges, 0.0)
@@ -264,8 +272,15 @@ class DiffDriveLidarGenesisEnv(gym.Env):
         w = float(action[1]) * self._w_max
         dt = self._control_dt
         self._yaw = self._yaw + w * dt
+        prev_xy = self._xy.copy()
         self._xy[0] += v * np.cos(self._yaw) * dt
         self._xy[1] += v * np.sin(self._yaw) * dt
+        # Pose override ignores Genesis contacts — resolve layout walls explicitly.
+        xy, wall_hit = resolve_wall_collision(
+            self._xy, self._layout.boxes, prev_xy=prev_xy
+        )
+        self._xy[:] = xy[:2]
+        self._wall_contact = wall_hit
         self._apply_pose(self._xy[0], self._xy[1], self._yaw)
         for _ in range(max(1, self.domain.physics_substeps)):
             self._scene.step()

@@ -19,6 +19,7 @@ from robolab.tasks.worlds import (
     enrich_task_info,
     layout_for_task,
     mujoco_scene_path,
+    resolve_wall_collision,
 )
 
 LIDAR_ANGLES_DEG = (0.0, 45.0, -45.0, 90.0, -90.0)
@@ -67,6 +68,7 @@ class DiffDriveLidarEnv(gym.Env):
         self._w_max = 1.2
         self._steps = 0
         self._success_streak = 0
+        self._wall_contact = False
         self._renderer: mujoco.Renderer | None = None
         self._cam: mujoco.MjvCamera | None = None
 
@@ -151,6 +153,7 @@ class DiffDriveLidarEnv(gym.Env):
             "physics_substeps": self.domain.physics_substeps,
             "control_dt": self._control_dt,
             "physics_dt": self._physics_dt,
+            "wall_contact": bool(self._wall_contact),
             **extra,
         }
         return obs.astype(np.float32), info
@@ -176,6 +179,7 @@ class DiffDriveLidarEnv(gym.Env):
         mujoco.mj_forward(self.model, self.data)
         self._steps = 0
         self._success_streak = 0
+        self._wall_contact = False
         self._path_s = 0.0
         if self.task.name == "figure8_tracking":
             self._path_s = 0.0
@@ -192,8 +196,18 @@ class DiffDriveLidarEnv(gym.Env):
 
         yaw = self._yaw()
         yaw = yaw + w * dt
+        prev_xy = [float(self.data.qpos[0]), float(self.data.qpos[1])]
         self.data.qpos[0] += v * np.cos(yaw) * dt
         self.data.qpos[1] += v * np.sin(yaw) * dt
+        # Kinematic drive bypasses MuJoCo contacts — resolve layout walls explicitly.
+        xy, wall_hit = resolve_wall_collision(
+            [self.data.qpos[0], self.data.qpos[1]],
+            self._layout.boxes,
+            prev_xy=prev_xy,
+        )
+        self.data.qpos[0] = float(xy[0])
+        self.data.qpos[1] = float(xy[1])
+        self._wall_contact = wall_hit
         self.data.qpos[2] = 0.05
         self.data.qpos[3:7] = np.array(
             [np.cos(yaw / 2), 0.0, 0.0, np.sin(yaw / 2)],

@@ -18,6 +18,7 @@ from robolab.tasks.worlds import (
     build_observation,
     enrich_task_info,
     layout_for_task,
+    resolve_wall_collision,
 )
 
 LIDAR_ANGLES_DEG = (0.0, 45.0, -45.0, 90.0, -90.0)
@@ -64,6 +65,7 @@ class DiffDriveLidarPybulletEnv(gym.Env):
         self._w_max = 1.2
         self._steps = 0
         self._success_streak = 0
+        self._wall_contact = False
 
         self._cid: int | None = None
         self._robot_id: int = -1
@@ -200,6 +202,7 @@ class DiffDriveLidarPybulletEnv(gym.Env):
             "physics_substeps": self.domain.physics_substeps,
             "control_dt": self._control_dt,
             "physics_dt": self._physics_dt,
+            "wall_contact": bool(self._wall_contact),
             **extra,
         }
         return obs.astype(np.float32), info
@@ -227,6 +230,7 @@ class DiffDriveLidarPybulletEnv(gym.Env):
             p.resetJointState(self._robot_id, j, 0.0, 0.0, physicsClientId=self._cid)
         self._steps = 0
         self._success_streak = 0
+        self._wall_contact = False
         self._path_s = 0.0
         ranges = self._lidar()
         obs, info = self._pack(ranges, 0.0)
@@ -244,8 +248,15 @@ class DiffDriveLidarPybulletEnv(gym.Env):
         )
         yaw = float(p.getEulerFromQuaternion(orn)[2])
         yaw = yaw + w * dt
+        prev_xy = [float(pos[0]), float(pos[1])]
         x = float(pos[0]) + v * np.cos(yaw) * dt
         y = float(pos[1]) + v * np.sin(yaw) * dt
+        # Kinematic reset overwrites PyBullet contacts — resolve layout walls explicitly.
+        xy, wall_hit = resolve_wall_collision(
+            [x, y], self._layout.boxes, prev_xy=prev_xy
+        )
+        x, y = float(xy[0]), float(xy[1])
+        self._wall_contact = wall_hit
         new_orn = p.getQuaternionFromEuler([0.0, 0.0, yaw])
         p.resetBasePositionAndOrientation(
             self._robot_id,
