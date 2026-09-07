@@ -46,10 +46,7 @@ def _reward(info: dict[str, Any]) -> float:
 def _termination(info: dict[str, Any]) -> bool:
     if is_wall_crash(info, COLLISION_DIST):
         return True
-    pos = info.get("position")
-    # Match scene.xml wall_end (~12.5); finish once past the far wall.
-    if pos is not None and float(pos[0]) > 12.0:
-        return True  # reached end of corridor (episode success terminal)
+    # Closed largemaze has no linear corridor end; episodes end on crash or max_steps.
     return False
 
 
@@ -77,15 +74,15 @@ def make_wall_follow() -> TaskSpec:
             high=1.0,
             notes="[linear_vel, angular_vel] normalized",
         ),
-        # ~12 m corridor at ~0.5 m/s and control_hz=50 needs ~1200+ steps;
-        # keep headroom so playback reaches the far wall (not a short stub clip).
-        max_steps=2000,
+        # Scaled largemaze (~20 m span); longer episodes than the old 12 m corridor.
+        max_steps=3000,
         reward=_reward,
         termination=_termination,
         success=_success,
         meta={
             "target_wall_distance": TARGET_DIST,
             "side": "right",
-            "corridor_end_x": 12.0,
+            "layout": "largemaze",
+            "wall_layout_scale": 2.5,
         },
     )

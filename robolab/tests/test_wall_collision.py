@@ -48,6 +48,22 @@ def test_spawn_not_in_collision():
     np.testing.assert_allclose(xy[:2], layout.spawn_xy, atol=1e-9)
 
 
+def test_wall_follow_largemaze_spawn_clear_and_scaled():
+    from robolab.tasks.worlds import WALL_LAYOUT_SCALE
+
+    layout = layout_for_task("wall_follow")
+    assert layout.name == "largemaze"
+    assert WALL_LAYOUT_SCALE == 2.5
+    assert len(layout.boxes) == 8
+    # Outer walls at ±4 * scale along axes.
+    xs = sorted(float(c[0]) for _h, c, _r in layout.boxes)
+    assert xs[0] == pytest.approx(-4.0 * WALL_LAYOUT_SCALE)
+    assert xs[-1] == pytest.approx(4.0 * WALL_LAYOUT_SCALE)
+    xy, hit = resolve_wall_collision(layout.spawn_xy, layout.boxes)
+    assert not hit
+    np.testing.assert_allclose(xy[:2], layout.spawn_xy, atol=1e-9)
+
+
 def _drive_into_east_wall(env, steps: int = 800) -> tuple[float, bool]:
     """Drive +x at full throttle; return final x and whether wall_contact ever fired."""
     env.reset(seed=0)

@@ -150,14 +150,43 @@ def is_wall_crash(info: dict[str, Any], collision_dist: float = 0.12) -> bool:
     return False
 
 
-# --- Corridor (wall_follow) — matches historical scene.xml ---
-CORRIDOR_BOXES: tuple[BoxSpec, ...] = (
-    ([6.5, 0.05, 0.25], [6.0, 0.7, 0.25], [0.55, 0.45, 0.35, 1.0]),
-    ([6.5, 0.05, 0.25], [6.0, -0.7, 0.25], [0.55, 0.45, 0.35, 1.0]),
-    ([0.05, 0.75, 0.25], [12.5, 0.0, 0.25], [0.45, 0.4, 0.35, 1.0]),
-    ([0.2, 0.05, 0.25], [-0.4, 0.7, 0.25], [0.55, 0.45, 0.35, 1.0]),
-    ([0.2, 0.05, 0.25], [-0.4, -0.7, 0.25], [0.55, 0.45, 0.35, 1.0]),
-)
+# --- wall_follow: P2_D3 Gazebo largemaze.world, scaled up ---
+# Source topology (m, yaw≈0 or π/2): outer 8×8 box (x,y ∈ [-4,4]) plus
+# internal segments for straight / inside-L / outside-L / I-corner / 180° U-turn
+# (Fig. 4 in P2_D3). Linear XY scale only; keep thin walls for lidar.
+WALL_LAYOUT_SCALE = 2.5
+_WALL_RGBA = [0.55, 0.45, 0.35, 1.0]
+_WALL_H = 0.25
+_WALL_HALF_T = 0.05  # half-thickness (m); not scaled — keep lidar/robot sensible
+
+
+def _scaled_wall_boxes(scale: float = WALL_LAYOUT_SCALE) -> tuple[BoxSpec, ...]:
+    """Build MuJoCo/PyBullet half-extent boxes from Gazebo full-size segments."""
+    # (cx, cy, yaw, full_length_along_local_x) from stingray largemaze.world
+    segments = (
+        (0.0, -2.0, 0.0, 4.0),  # bottom_inner horizontal
+        (-2.5, 0.0, 0.0, 3.0),  # mid_left horizontal
+        (-4.0, 0.0, 1.5708, 8.0),  # left vertical (perimeter)
+        (2.0, 1.0, 1.5708, 2.0),  # stub vertical (I / U helper)
+        (0.0, 4.0, 0.0, 8.0),  # top horizontal (perimeter)
+        (4.0, 0.0, 1.5708, 8.0),  # right vertical (perimeter)
+        (-1.0, 2.0, 0.0, 6.0),  # mid_top horizontal
+        (0.0, -4.0, 0.0, 8.0),  # bottom horizontal (perimeter)
+    )
+    boxes: list[BoxSpec] = []
+    s = float(scale)
+    for cx, cy, yaw, length in segments:
+        half_len = 0.5 * length * s
+        if abs(yaw) > 1.0:  # ≈π/2 → long axis along world Y
+            half = [_WALL_HALF_T, half_len, _WALL_H]
+        else:
+            half = [half_len, _WALL_HALF_T, _WALL_H]
+        center = [cx * s, cy * s, _WALL_H]
+        boxes.append((half, center, list(_WALL_RGBA)))
+    return tuple(boxes)
+
+
+CORRIDOR_BOXES: tuple[BoxSpec, ...] = _scaled_wall_boxes(WALL_LAYOUT_SCALE)
 
 # Open arena perimeter for go_to_goal / figure8
 OPEN_PERIMETER: tuple[BoxSpec, ...] = (
@@ -191,9 +220,14 @@ MAZE_BOXES: tuple[BoxSpec, ...] = (
 
 WORLDS: dict[str, WorldLayout] = {
     "wall_follow": WorldLayout(
-        name="corridor",
+        name="largemaze",
         boxes=CORRIDOR_BOXES,
-        spawn_xy=(0.3, 0.0),
+        # Gazebo launch spawn (0,0); open cell east of mid_left segment.
+        floor_half_xy=(4.0 * WALL_LAYOUT_SCALE + 2.0, 4.0 * WALL_LAYOUT_SCALE + 2.0),
+        spawn_xy=(0.0, 0.0),
+        spawn_yaw=0.0,
+        spawn_noise_y=0.2,
+        spawn_noise_yaw=0.2,
         mujoco_scene="scene.xml",
     ),
     "go_to_goal": WorldLayout(

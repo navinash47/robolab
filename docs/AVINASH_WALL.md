@@ -8,6 +8,17 @@ The same PDF **task mode** (27-state bins for reward, 3 discrete actions, ε sch
 is also available as **function-approx Q-learning** when New Run sets
 **Algo = Q-learning** with Arch = `mlp` | `kan` | `kaf` | `gpkan` | `fan`.
 
+## World layout (largemaze)
+
+`wall_follow` uses the Gazebo **`largemaze.world`** topology from the course
+package (same segments as Fig. 4 scenarios: straight, inside-L, outside-L,
+I-corner, 180° U-turn), scaled by **`WALL_LAYOUT_SCALE = 2.5`** in
+`robolab/tasks/worlds.py`. Outer span ≈ **20 m × 20 m** (source was 8×8 m).
+Shared `WorldLayout` boxes drive MuJoCo `scene.xml`, PyBullet, and Genesis.
+
+After a layout change: **retrain** and **re-render** — old checkpoints were
+trained on the previous straight corridor.
+
 ## Algorithm chosen
 
 **Q-learning** (not SARSA). The report finds both reach similar final J-values

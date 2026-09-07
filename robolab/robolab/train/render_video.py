@@ -101,11 +101,20 @@ def _set_robot_xy_yaw(base, x: float, y: float, yaw: float) -> bool:
 
 
 def _sample_wall_follow_start(rng) -> tuple[float, float, float]:
-    """Random free-space pose along the corridor (no fixed origin every Render)."""
-    # Walls at y=±0.7, end wall ~x=12.5; keep clear of walls and leave runway.
-    x = float(rng.uniform(0.4, 8.5))
-    y = float(rng.uniform(-0.35, 0.35))
-    yaw = float(rng.uniform(-0.4, 0.4))
+    """Random free-space pose in the scaled largemaze (open cells only)."""
+    # Open pockets away from thin walls (scale=2.5). Reject near-wall samples via
+    # resolve when available; ranges below stay clear of AABB faces by ≥0.5 m.
+    pockets = (
+        (0.0, -2.5, 1.5, 1.2),  # south of origin
+        (0.0, -7.5, 2.0, 1.0),  # bottom corridor
+        (7.0, -5.0, 1.5, 2.0),  # SE open
+        (7.0, 7.0, 1.5, 1.5),  # NE open
+        (-5.0, -7.0, 1.5, 1.0),  # SW corridor
+    )
+    cx, cy, hx, hy = pockets[int(rng.integers(0, len(pockets)))]
+    x = float(cx + rng.uniform(-hx, hx))
+    y = float(cy + rng.uniform(-hy, hy))
+    yaw = float(rng.uniform(-0.5, 0.5))
     return x, y, yaw
 
 

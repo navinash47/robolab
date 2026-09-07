@@ -21,7 +21,7 @@ Differential-drive base with 5 virtual range rays (front, ±45°, ±90°). Geome
 | File | Role |
 |---|---|
 | `robot.urdf` | Canonical URDF (PyBullet / Genesis) |
-| `scene.xml` | MuJoCo corridor (`wall_follow`) |
+| `scene.xml` | MuJoCo scaled largemaze (`wall_follow`) |
 | `scene_open.xml` | Open arena (`go_to_goal`, `figure8_tracking`) |
 | `scene_dock.xml` | Parallel-park bay (`docking`) |
 | `scene_maze.xml` | Obstacle maze (`maze`) |
