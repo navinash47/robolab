@@ -50,6 +50,7 @@ MUJOCO_LOG.TXT
 .vscode/
 .cursor/
 STATUS.md
+session_handoff.md
 *.swp
 *.swo
 
