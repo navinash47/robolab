@@ -98,6 +98,20 @@ class FailureRecord(SQLModel, table=True):
     source: str = "auto"  # auto | manual | seed
 
 
+class SavedArch(SQLModel, table=True):
+    """User-authored architecture configs from the Architectures Builder tab."""
+
+    __tablename__ = "saved_arch"
+
+    id: str = Field(primary_key=True)
+    name: str = Field(index=True, unique=True)
+    base_arch: str = Field(index=True)  # mlp | kan | kaf | gpkan | fan
+    cfg_json: str = "{}"
+    notes: str = ""
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 _RUN_EXTRA_COLS: dict[str, str] = {
     "param_count": "INTEGER",
     "pod_id": "TEXT",

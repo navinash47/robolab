@@ -100,6 +100,20 @@ type CompareResponse = {
   runs: CompareRun[];
 };
 
+type SavedArch = {
+  id: string;
+  name: string;
+  base_arch: string;
+  cfg: Record<string, unknown>;
+  notes?: string;
+};
+
+type ArchsResponse = {
+  archs: string[];
+  saved?: SavedArch[];
+  defaults?: Record<string, Record<string, unknown>>;
+};
+
 const SERIES_COLORS = ["#0f766e", "#b45309", "#1d4ed8", "#be123c", "#7c3aed"];
 
 function formatUsd(n: number): string {
@@ -126,11 +140,53 @@ function statusClass(status: string): string {
   }
 }
 
-function archCfgFor(arch: string): Record<string, unknown> {
+function archCfgFor(
+  arch: string,
+  defaults?: Record<string, Record<string, unknown>>,
+  saved?: SavedArch[],
+): Record<string, unknown> {
+  if (arch.startsWith("custom:")) {
+    const id = arch.slice("custom:".length);
+    const hit = saved?.find((s) => s.id === id);
+    if (hit) return { ...hit.cfg };
+  }
+  const byName = saved?.find((s) => s.name === arch);
+  if (byName) return { ...byName.cfg };
+  if (defaults?.[arch]) return { ...defaults[arch] };
   if (arch === "kan") {
     return { hidden_sizes: [32, 32], grid_size: 5, spline_order: 3 };
   }
+  if (arch === "kaf") {
+    return {
+      hidden_sizes: [64, 64],
+      num_grids: 8,
+      activation_expectation: 1.64,
+      use_layernorm: true,
+      spline_dropout: 0.0,
+    };
+  }
+  if (arch === "gpkan") {
+    return {
+      hidden_sizes: [32, 32],
+      num_basis: 8,
+      init_bandwidth: 1.0,
+      base_activation: "gelu",
+    };
+  }
+  if (arch === "fan") {
+    return { hidden_sizes: [64, 64], p_ratio: 0.25, activation: "gelu" };
+  }
   return { hidden_sizes: [64, 64], activation: "tanh" };
+}
+
+function parseHiddenSizes(raw: string): number[] {
+  const parts = raw
+    .split(/[,\s]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map(Number)
+    .filter((n) => Number.isFinite(n) && n > 0);
+  return parts.length ? parts.map((n) => Math.floor(n)) : [64, 64];
 }
 
 function seriesKey(run: CompareRun): string {
@@ -154,10 +210,16 @@ function buildChartData(runs: CompareRun[]): Record<string, number | null>[] {
 }
 
 export default function App() {
-  const [view, setView] = useState<"experiments" | "compare">("experiments");
+  const [view, setView] = useState<"experiments" | "compare" | "architectures">(
+    "experiments",
+  );
   const [budget, setBudget] = useState<Budget | null>(null);
   const [wandb, setWandb] = useState<WandbStatus | null>(null);
-  const [archs, setArchs] = useState<string[]>(["mlp", "kan"]);
+  const [archs, setArchs] = useState<string[]>(["mlp", "kan", "kaf", "gpkan", "fan"]);
+  const [savedArchs, setSavedArchs] = useState<SavedArch[]>([]);
+  const [archDefaults, setArchDefaults] = useState<
+    Record<string, Record<string, unknown>>
+  >({});
   const [sims, setSims] = useState<string[]>(["mujoco", "pybullet"]);
   const [simMeta, setSimMeta] = useState<Record<string, { capabilities: string[] }>>({});
   const [tasks, setTasks] = useState<string[]>(["wall_follow"]);
@@ -188,6 +250,21 @@ export default function App() {
     gpu_type: "best",
     budget_usd: 0,
   });
+  const [builderBase, setBuilderBase] = useState("kaf");
+  const [builderName, setBuilderName] = useState("kaf_wall_follow");
+  const [builderHidden, setBuilderHidden] = useState("64, 64");
+  const [builderNumGrids, setBuilderNumGrids] = useState(8);
+  const [builderNumBasis, setBuilderNumBasis] = useState(8);
+  const [builderPRatio, setBuilderPRatio] = useState(0.25);
+  const [builderLayernorm, setBuilderLayernorm] = useState(true);
+  const [builderActExpect, setBuilderActExpect] = useState(1.64);
+  const [builderBandwidth, setBuilderBandwidth] = useState(1.0);
+  const [builderGridSize, setBuilderGridSize] = useState(5);
+  const [builderSplineOrder, setBuilderSplineOrder] = useState(3);
+  const [builderActivation, setBuilderActivation] = useState("gelu");
+  const [builderLr, setBuilderLr] = useState(0.0003);
+  const [builderNotes, setBuilderNotes] = useState("");
+  const [builderSaving, setBuilderSaving] = useState(false);
   const esRef = useRef<Map<string, EventSource>>(new Map());
   const detailRef = useRef<HTMLDivElement>(null);
 
@@ -232,8 +309,10 @@ export default function App() {
         setWandb(null);
       }
       if (archsRes.ok) {
-        const a = (await archsRes.json()) as { archs: string[] };
+        const a = (await archsRes.json()) as ArchsResponse;
         if (a.archs?.length) setArchs(a.archs);
+        if (a.saved) setSavedArchs(a.saved);
+        if (a.defaults) setArchDefaults(a.defaults);
       }
       if (simsRes.ok) {
         const s = (await simsRes.json()) as {
@@ -346,17 +425,21 @@ export default function App() {
       }
       const nSteps = steps <= 2048 ? 512 : steps <= 5000 ? 1024 : 2048;
       const isRunpod = form.compute === "runpod";
+      const archValue = form.arch;
+      const cfg = archCfgFor(archValue, archDefaults, savedArchs);
+      const lrHint =
+        typeof cfg.lr_default === "number" ? Number(cfg.lr_default) : 0.0003;
       const body = {
-        name: `${form.task}-${form.arch}-${form.compute}`,
+        name: `${form.task}-${form.arch.replace(/^custom:/, "")}-${form.compute}`,
         sim: form.sim,
         task: form.task,
         robot: form.robot,
-        arch: form.arch,
-        arch_cfg: archCfgFor(form.arch),
+        arch: archValue,
+        arch_cfg: cfg,
         trainer: {
           algo: "ppo",
           timesteps: steps,
-          lr: 0.0003,
+          lr: lrHint,
           batch_size: 64,
           n_steps: nSteps,
           n_envs: 1,
@@ -395,6 +478,113 @@ export default function App() {
       setError(err instanceof Error ? err.message : "Failed to start run");
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  function builderCfgFromForm(): Record<string, unknown> {
+    const hidden = parseHiddenSizes(builderHidden);
+    const base: Record<string, unknown> = {
+      hidden_sizes: hidden,
+      lr_default: builderLr,
+    };
+    if (builderBase === "kaf") {
+      return {
+        ...base,
+        num_grids: builderNumGrids,
+        activation_expectation: builderActExpect,
+        use_layernorm: builderLayernorm,
+        spline_dropout: 0.0,
+      };
+    }
+    if (builderBase === "gpkan") {
+      return {
+        ...base,
+        num_basis: builderNumBasis,
+        init_bandwidth: builderBandwidth,
+        base_activation: "gelu",
+      };
+    }
+    if (builderBase === "fan") {
+      return {
+        ...base,
+        p_ratio: builderPRatio,
+        activation: builderActivation,
+      };
+    }
+    if (builderBase === "kan") {
+      return {
+        ...base,
+        grid_size: builderGridSize,
+        spline_order: builderSplineOrder,
+      };
+    }
+    return { ...base, activation: builderActivation === "gelu" ? "tanh" : builderActivation };
+  }
+
+  function applyBuilderBase(base: string) {
+    setBuilderBase(base);
+    const d = archDefaults[base] ?? archCfgFor(base);
+    const hs = (d.hidden_sizes as number[] | undefined) ?? [64, 64];
+    setBuilderHidden(hs.join(", "));
+    if (typeof d.num_grids === "number") setBuilderNumGrids(d.num_grids);
+    if (typeof d.num_basis === "number") setBuilderNumBasis(d.num_basis);
+    if (typeof d.p_ratio === "number") setBuilderPRatio(d.p_ratio);
+    if (typeof d.use_layernorm === "boolean") setBuilderLayernorm(d.use_layernorm);
+    if (typeof d.activation_expectation === "number")
+      setBuilderActExpect(d.activation_expectation);
+    if (typeof d.init_bandwidth === "number") setBuilderBandwidth(d.init_bandwidth);
+    if (typeof d.grid_size === "number") setBuilderGridSize(d.grid_size);
+    if (typeof d.spline_order === "number") setBuilderSplineOrder(d.spline_order);
+    if (typeof d.activation === "string") setBuilderActivation(d.activation);
+    if (typeof d.lr_default === "number") setBuilderLr(d.lr_default);
+    if (!builderName || builderName.endsWith("_wall_follow") || archs.includes(builderName.split("_")[0] ?? "")) {
+      setBuilderName(`${base}_wall_follow`);
+    }
+  }
+
+  async function saveArchitecture() {
+    setBuilderSaving(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/architectures", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: builderName.trim(),
+          base_arch: builderBase,
+          cfg: builderCfgFromForm(),
+          notes: builderNotes,
+        }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`POST /api/architectures failed (${res.status}): ${text}`);
+      }
+      const saved = (await res.json()) as SavedArch;
+      setForm((f) => ({ ...f, arch: `custom:${saved.id}` }));
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save architecture");
+    } finally {
+      setBuilderSaving(false);
+    }
+  }
+
+  async function deleteArchitecture(id: string) {
+    if (!window.confirm("Delete this saved architecture?")) return;
+    setError(null);
+    try {
+      const res = await fetch(`/api/architectures/${id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`DELETE failed (${res.status}): ${text}`);
+      }
+      if (form.arch === `custom:${id}`) {
+        setForm((f) => ({ ...f, arch: "mlp" }));
+      }
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete architecture");
     }
   }
 
@@ -620,6 +810,18 @@ export default function App() {
           </button>
           <button
             type="button"
+            data-testid="nav-architectures"
+            className={`rounded px-3 py-1.5 text-sm font-medium ${
+              view === "architectures"
+                ? "bg-[var(--accent)] text-white"
+                : "border border-[var(--border)] bg-[var(--surface)]"
+            }`}
+            onClick={() => setView("architectures")}
+          >
+            Architectures
+          </button>
+          <button
+            type="button"
             data-testid="nav-compare"
             className={`rounded px-3 py-1.5 text-sm font-medium ${
               view === "compare"
@@ -684,14 +886,44 @@ export default function App() {
                     <select
                       className="w-full rounded border border-[var(--border)] bg-white px-3 py-2"
                       value={form.arch}
-                      onChange={(e) => setForm({ ...form, arch: e.target.value })}
+                      onChange={(e) => {
+                        const next = e.target.value;
+                        const paperish = ["kaf", "gpkan", "fan"].includes(next) ||
+                          savedArchs.some(
+                            (s) =>
+                              `custom:${s.id}` === next &&
+                              ["kaf", "gpkan", "fan"].includes(s.base_arch),
+                          );
+                        setForm({
+                          ...form,
+                          arch: next,
+                          timesteps:
+                            paperish && form.timesteps < 100_000
+                              ? 100_000
+                              : form.timesteps,
+                        });
+                        if (paperish && form.timesteps < 100_000) {
+                          setTimestepMode("preset");
+                        }
+                      }}
                       data-testid="arch-select"
                     >
-                      {archs.map((a) => (
-                        <option key={a} value={a}>
-                          {a}
-                        </option>
-                      ))}
+                      <optgroup label="Builtins">
+                        {archs.map((a) => (
+                          <option key={a} value={a}>
+                            {a}
+                          </option>
+                        ))}
+                      </optgroup>
+                      {savedArchs.length > 0 && (
+                        <optgroup label="Saved">
+                          {savedArchs.map((s) => (
+                            <option key={s.id} value={`custom:${s.id}`}>
+                              {s.name} ({s.base_arch})
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
                     </select>
                   </label>
                   <label className="text-sm">
@@ -757,6 +989,7 @@ export default function App() {
                         }}
                         data-testid="timesteps-select"
                       >
+                        <option value={100_000}>100k</option>
                         <option value={50_000}>50k</option>
                         <option value={5_000}>5k (smoke)</option>
                         <option value={2_048}>2k (quick)</option>
@@ -838,6 +1071,17 @@ export default function App() {
                 {form.arch === "kan" && form.compute === "local" && (
                   <p className="mt-3 text-xs text-[var(--muted)]">
                     KAN on Mac CPU is slow — use 5k smoke for a quick gate, or 50k overnight.
+                  </p>
+                )}
+                {["kaf", "gpkan", "fan"].includes(form.arch) && (
+                  <p className="mt-3 text-xs text-[var(--muted)]">
+                    Paper arches (arXiv:2502.06018 family): prefer RunPod + 100k wall_follow for
+                    proof; use 2k/5k smoke first.
+                  </p>
+                )}
+                {form.arch.startsWith("custom:") && (
+                  <p className="mt-3 text-xs text-[var(--muted)]">
+                    Using saved architecture from the Architectures tab.
                   </p>
                 )}
                 {form.compute === "runpod" && (
@@ -1407,6 +1651,277 @@ export default function App() {
               </p>
             )}
           </>
+        )}
+
+        {view === "architectures" && (
+          <div data-testid="architectures-view">
+            <div className="mb-4">
+              <h2 className="text-lg font-medium text-[var(--text)]">Architecture Builder</h2>
+              <p className="text-sm text-[var(--muted)]">
+                Dial hyperparameters for KAF / GPKAN / FAN (arXiv:2502.06018 family), save a named
+                arch, then pick it in New Run. Builtins mlp/kan unchanged.
+              </p>
+            </div>
+
+            <div
+              className="mb-6 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-5"
+              data-testid="arch-builder-form"
+            >
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="text-sm">
+                  <span className="mb-1 block text-[var(--muted)]">Base architecture</span>
+                  <select
+                    className="w-full rounded border border-[var(--border)] bg-white px-3 py-2"
+                    value={builderBase}
+                    onChange={(e) => applyBuilderBase(e.target.value)}
+                    data-testid="builder-base"
+                  >
+                    {archs.map((a) => (
+                      <option key={a} value={a}>
+                        {a}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="text-sm">
+                  <span className="mb-1 block text-[var(--muted)]">Name (slug)</span>
+                  <input
+                    className="w-full rounded border border-[var(--border)] bg-white px-3 py-2"
+                    value={builderName}
+                    onChange={(e) => setBuilderName(e.target.value)}
+                    data-testid="builder-name"
+                    placeholder="kaf_wall_follow"
+                  />
+                </label>
+                <label className="text-sm sm:col-span-2">
+                  <span className="mb-1 block text-[var(--muted)]">
+                    Hidden widths (comma-separated)
+                  </span>
+                  <input
+                    className="w-full rounded border border-[var(--border)] bg-white px-3 py-2"
+                    value={builderHidden}
+                    onChange={(e) => setBuilderHidden(e.target.value)}
+                    data-testid="builder-hidden"
+                  />
+                </label>
+                {builderBase === "kaf" && (
+                  <>
+                    <label className="text-sm">
+                      <span className="mb-1 block text-[var(--muted)]">num_grids (RFF)</span>
+                      <input
+                        type="number"
+                        min={2}
+                        max={64}
+                        className="w-full rounded border border-[var(--border)] bg-white px-3 py-2"
+                        value={builderNumGrids}
+                        onChange={(e) => setBuilderNumGrids(Number(e.target.value))}
+                        data-testid="builder-num-grids"
+                      />
+                    </label>
+                    <label className="text-sm">
+                      <span className="mb-1 block text-[var(--muted)]">
+                        activation_expectation (σ)
+                      </span>
+                      <input
+                        type="number"
+                        step={0.01}
+                        min={0.1}
+                        max={4}
+                        className="w-full rounded border border-[var(--border)] bg-white px-3 py-2"
+                        value={builderActExpect}
+                        onChange={(e) => setBuilderActExpect(Number(e.target.value))}
+                      />
+                    </label>
+                    <label className="flex items-center gap-2 text-sm sm:col-span-2">
+                      <input
+                        type="checkbox"
+                        checked={builderLayernorm}
+                        onChange={(e) => setBuilderLayernorm(e.target.checked)}
+                      />
+                      use_layernorm
+                    </label>
+                  </>
+                )}
+                {builderBase === "gpkan" && (
+                  <>
+                    <label className="text-sm">
+                      <span className="mb-1 block text-[var(--muted)]">num_basis (RBF)</span>
+                      <input
+                        type="number"
+                        min={2}
+                        max={64}
+                        className="w-full rounded border border-[var(--border)] bg-white px-3 py-2"
+                        value={builderNumBasis}
+                        onChange={(e) => setBuilderNumBasis(Number(e.target.value))}
+                        data-testid="builder-num-basis"
+                      />
+                    </label>
+                    <label className="text-sm">
+                      <span className="mb-1 block text-[var(--muted)]">init_bandwidth</span>
+                      <input
+                        type="number"
+                        step={0.1}
+                        min={0.05}
+                        max={10}
+                        className="w-full rounded border border-[var(--border)] bg-white px-3 py-2"
+                        value={builderBandwidth}
+                        onChange={(e) => setBuilderBandwidth(Number(e.target.value))}
+                      />
+                    </label>
+                  </>
+                )}
+                {builderBase === "fan" && (
+                  <>
+                    <label className="text-sm">
+                      <span className="mb-1 block text-[var(--muted)]">p_ratio (0–0.5)</span>
+                      <input
+                        type="number"
+                        step={0.05}
+                        min={0.05}
+                        max={0.45}
+                        className="w-full rounded border border-[var(--border)] bg-white px-3 py-2"
+                        value={builderPRatio}
+                        onChange={(e) => setBuilderPRatio(Number(e.target.value))}
+                        data-testid="builder-p-ratio"
+                      />
+                    </label>
+                    <label className="text-sm">
+                      <span className="mb-1 block text-[var(--muted)]">activation</span>
+                      <select
+                        className="w-full rounded border border-[var(--border)] bg-white px-3 py-2"
+                        value={builderActivation}
+                        onChange={(e) => setBuilderActivation(e.target.value)}
+                      >
+                        <option value="gelu">gelu</option>
+                        <option value="relu">relu</option>
+                        <option value="silu">silu</option>
+                        <option value="tanh">tanh</option>
+                      </select>
+                    </label>
+                  </>
+                )}
+                {builderBase === "kan" && (
+                  <>
+                    <label className="text-sm">
+                      <span className="mb-1 block text-[var(--muted)]">grid_size</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={32}
+                        className="w-full rounded border border-[var(--border)] bg-white px-3 py-2"
+                        value={builderGridSize}
+                        onChange={(e) => setBuilderGridSize(Number(e.target.value))}
+                      />
+                    </label>
+                    <label className="text-sm">
+                      <span className="mb-1 block text-[var(--muted)]">spline_order</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={5}
+                        className="w-full rounded border border-[var(--border)] bg-white px-3 py-2"
+                        value={builderSplineOrder}
+                        onChange={(e) => setBuilderSplineOrder(Number(e.target.value))}
+                      />
+                    </label>
+                  </>
+                )}
+                <label className="text-sm">
+                  <span className="mb-1 block text-[var(--muted)]">lr_default (hint)</span>
+                  <input
+                    type="number"
+                    step={0.0001}
+                    min={1e-6}
+                    max={0.1}
+                    className="w-full rounded border border-[var(--border)] bg-white px-3 py-2"
+                    value={builderLr}
+                    onChange={(e) => setBuilderLr(Number(e.target.value))}
+                  />
+                </label>
+                <label className="text-sm sm:col-span-2">
+                  <span className="mb-1 block text-[var(--muted)]">Notes</span>
+                  <input
+                    className="w-full rounded border border-[var(--border)] bg-white px-3 py-2"
+                    value={builderNotes}
+                    onChange={(e) => setBuilderNotes(e.target.value)}
+                    placeholder="optional"
+                  />
+                </label>
+              </div>
+              <div className="mt-4 flex gap-3">
+                <button
+                  type="button"
+                  disabled={builderSaving}
+                  onClick={() => void saveArchitecture()}
+                  className="rounded bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+                  data-testid="builder-save"
+                >
+                  {builderSaving ? "Saving…" : "Save architecture"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowNewRun(true);
+                    setView("experiments");
+                  }}
+                  className="rounded border border-[var(--border)] px-4 py-2 text-sm"
+                >
+                  Use in New Run
+                </button>
+              </div>
+            </div>
+
+            <h3 className="mb-2 text-base font-medium">Saved architectures</h3>
+            {savedArchs.length === 0 ? (
+              <p className="text-sm text-[var(--muted)]" data-testid="saved-archs-empty">
+                None yet — save one above.
+              </p>
+            ) : (
+              <table className="w-full text-left text-sm" data-testid="saved-archs-table">
+                <thead>
+                  <tr className="border-b border-[var(--border)] text-[var(--muted)]">
+                    <th className="py-2 pr-3 font-medium">Name</th>
+                    <th className="py-2 pr-3 font-medium">Base</th>
+                    <th className="py-2 pr-3 font-medium">Id</th>
+                    <th className="py-2 font-medium">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {savedArchs.map((s) => (
+                    <tr
+                      key={s.id}
+                      className="border-b border-[var(--border)]"
+                      data-testid={`saved-arch-${s.id}`}
+                    >
+                      <td className="py-2 pr-3 font-medium">{s.name}</td>
+                      <td className="py-2 pr-3">{s.base_arch}</td>
+                      <td className="py-2 pr-3 font-mono text-xs">{s.id}</td>
+                      <td className="py-2">
+                        <button
+                          type="button"
+                          className="mr-2 text-[var(--accent)] underline"
+                          onClick={() => {
+                            setForm((f) => ({ ...f, arch: `custom:${s.id}` }));
+                            setShowNewRun(true);
+                            setView("experiments");
+                          }}
+                        >
+                          Use
+                        </button>
+                        <button
+                          type="button"
+                          className="text-red-700 underline"
+                          onClick={() => void deleteArchitecture(s.id)}
+                        >
+                          Delete
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
         )}
 
         {view === "compare" && (

@@ -12,7 +12,13 @@ from sqlmodel import select
 
 from robolab_api.budget import get_budget
 from robolab_api.db import Run, SessionDep, create_db_and_tables
-from robolab_api.routes import compare_router, costs_router, failures_router, runs_router
+from robolab_api.routes import (
+    architectures_router,
+    compare_router,
+    costs_router,
+    failures_router,
+    runs_router,
+)
 from robolab_api.routes.failures import ensure_seeded
 from robolab_api.wandb_status import get_wandb_status
 from robolab_api.watchdog import watchdog_loop
@@ -82,6 +88,7 @@ app.include_router(runs_router)
 app.include_router(compare_router)
 app.include_router(costs_router)
 app.include_router(failures_router)
+app.include_router(architectures_router)
 
 
 @app.get("/health")
@@ -90,10 +97,23 @@ def health() -> dict[str, str]:
 
 
 @app.get("/api/archs")
-def list_archs_endpoint() -> dict:
+def list_archs_endpoint(session: SessionDep) -> dict:
+    """Builtin registry names + saved Architectures Builder entries."""
     from robolab.core.arch import list_archs
+    from robolab_api.routes.architectures import _row_to_dict, default_cfg
+    from robolab_api.db import SavedArch
+    from sqlmodel import select
 
-    return {"archs": list_archs()}
+    import robolab.archs  # noqa: F401
+
+    builtins = list_archs()
+    rows = session.exec(select(SavedArch).order_by(SavedArch.updated_at.desc())).all()
+    saved = [_row_to_dict(r) for r in rows]
+    return {
+        "archs": builtins,
+        "saved": saved,
+        "defaults": {name: default_cfg(name) for name in builtins},
+    }
 
 
 @app.get("/api/sims")

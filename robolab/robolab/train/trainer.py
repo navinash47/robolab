@@ -82,7 +82,13 @@ def train(cfg: RunConfig, run_id: str, backend_url: str) -> dict:
                 "name": run_name,
                 "config": cfg.model_dump(),
                 "job_type": "train",
-                "tags": ["phase2" if cfg.arch == "kan" else "phase1", cfg.arch, cfg.task, cfg.sim, cfg.compute],
+                "tags": [
+                    "arch-builder" if cfg.arch in {"kaf", "gpkan", "fan"} else ("phase2" if cfg.arch == "kan" else "phase1"),
+                    cfg.arch,
+                    cfg.task,
+                    cfg.sim,
+                    cfg.compute,
+                ],
                 "settings": wandb.Settings(init_timeout=120),
             }
             if entity:

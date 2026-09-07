@@ -246,8 +246,18 @@ def create_run(body: RunConfig, session: SessionDep) -> dict:
     if body.compute not in {"local", "runpod"}:
         raise HTTPException(400, f"Unsupported compute={body.compute!r}")
 
+    from robolab_api.routes.architectures import resolve_arch_for_run
+
+    base_arch, arch_cfg, saved_name = resolve_arch_for_run(
+        session, body.arch, dict(body.arch_cfg or {})
+    )
+    body = body.model_copy(update={"arch": base_arch, "arch_cfg": arch_cfg})
+
     run_id = uuid.uuid4().hex[:12]
-    name = body.name or f"{body.task}-{body.arch}-{body.compute}"
+    arch_label = saved_name or body.arch
+    name = body.name or f"{body.task}-{arch_label}-{body.compute}"
+    if saved_name and not body.name:
+        body = body.model_copy(update={"name": name})
     total = int(body.trainer.timesteps)
     row = Run(
         id=run_id,

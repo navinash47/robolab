@@ -1,0 +1,2 @@
+# Saved architecture YAML mirrors (Architectures Builder).
+# SQLite `saved_arch` is source of truth for the API; files here are git-friendly dumps.
