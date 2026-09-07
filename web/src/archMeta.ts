@@ -1,6 +1,6 @@
 /** Display names, blurbs, and docs for Architectures UI. */
 
-export type BuiltinArchKey = "mlp" | "kan" | "kaf" | "gpkan" | "fan";
+export type BuiltinArchKey = "mlp" | "kan" | "kaf" | "gpkan" | "fan" | "avinash_wall";
 
 export type ArchMeta = {
   key: string;
@@ -14,6 +14,8 @@ export type ArchMeta = {
 
 const PHASE_ARCH_DOCS =
   "https://github.com/navinash47/robolab/blob/main/docs/PHASE_ARCH_BUILDER_APIS.md";
+const AVINASH_WALL_DOCS =
+  "https://github.com/navinash47/robolab/blob/main/docs/AVINASH_WALL.md";
 
 export const BUILTIN_ARCH_META: Record<BuiltinArchKey, ArchMeta> = {
   mlp: {
@@ -61,6 +63,15 @@ export const BUILTIN_ARCH_META: Record<BuiltinArchKey, ArchMeta> = {
     docsUrl: "https://arxiv.org/abs/2410.02675",
     paper: "Dong et al. arXiv:2410.02675",
   },
+  avinash_wall: {
+    key: "avinash_wall",
+    label: "Avinash Wall Follow",
+    short: "Tabular Q-learning wall follower from the Robotics course project (P2_D3).",
+    long: "Course-project wall follower: 3 lidar sectors × 3 distance bins (27 states), 3 actions (turn left / forward / turn right) at 0.3 m/s, and the PDF piecewise reward (+20 optimal right distance, +15/−8 front-near turn logic, −5 far, −1 near). Trains with Q-learning (α=0.1, γ=1.0, ε 1.0→0.1 over 200 episodes) via a dedicated tabular runner — not SB3 PPO. SARSA is available via arch_cfg.algorithm=sarsa.",
+    docsLabel: "AVINASH_WALL.md",
+    docsUrl: AVINASH_WALL_DOCS,
+    paper: "Course P2_D3 — Q-learning",
+  },
 };
 
 /** Shared list page sizes (Experiments + Architectures). */
@@ -95,6 +106,21 @@ export const BUILTIN_DEFAULT_CFG: Record<string, Record<string, unknown>> = {
     activation: "gelu",
     lr_default: 3.0e-4,
   },
+  avinash_wall: {
+    algorithm: "q_learning",
+    alpha: 0.1,
+    gamma: 1.0,
+    epsilon_start: 1.0,
+    epsilon_end: 0.1,
+    epsilon_decay: 0.05,
+    explore_episodes: 200,
+    episode_max_steps: 1200,
+    linear_vel: 0.3,
+    angular_vel: 0.7,
+    near_max: 0.7,
+    medium_max: 0.9,
+    lr_default: 0.1,
+  },
 };
 
 export function builtinMeta(name: string): ArchMeta | null {
@@ -108,6 +134,8 @@ export function formatCfgSummary(cfg: Record<string, unknown>): string {
   const parts: string[] = [];
   const hs = cfg.hidden_sizes;
   if (Array.isArray(hs)) parts.push(`widths ${hs.join("×")}`);
+  if (typeof cfg.algorithm === "string") parts.push(String(cfg.algorithm));
+  if (typeof cfg.alpha === "number") parts.push(`α ${cfg.alpha}`);
   if (typeof cfg.num_grids === "number") parts.push(`grids ${cfg.num_grids}`);
   if (typeof cfg.num_basis === "number") parts.push(`basis ${cfg.num_basis}`);
   if (typeof cfg.p_ratio === "number") parts.push(`p_ratio ${cfg.p_ratio}`);

@@ -179,6 +179,23 @@ function archCfgFor(
   if (arch === "fan") {
     return { hidden_sizes: [64, 64], p_ratio: 0.25, activation: "gelu" };
   }
+  if (arch === "avinash_wall") {
+    return {
+      algorithm: "q_learning",
+      alpha: 0.1,
+      gamma: 1.0,
+      epsilon_start: 1.0,
+      epsilon_end: 0.1,
+      epsilon_decay: 0.05,
+      explore_episodes: 200,
+      episode_max_steps: 1200,
+      linear_vel: 0.3,
+      angular_vel: 0.7,
+      near_max: 0.7,
+      medium_max: 0.9,
+      lr_default: 0.1,
+    };
+  }
   return { hidden_sizes: [64, 64], activation: "tanh" };
 }
 
@@ -219,7 +236,14 @@ export default function App() {
   const [archDetailKey, setArchDetailKey] = useState<string | null>(null);
   const [budget, setBudget] = useState<Budget | null>(null);
   const [wandb, setWandb] = useState<WandbStatus | null>(null);
-  const [archs, setArchs] = useState<string[]>(["mlp", "kan", "kaf", "gpkan", "fan"]);
+  const [archs, setArchs] = useState<string[]>([
+    "mlp",
+    "kan",
+    "kaf",
+    "gpkan",
+    "fan",
+    "avinash_wall",
+  ]);
   const [savedArchs, setSavedArchs] = useState<SavedArch[]>([]);
   const [archDefaults, setArchDefaults] = useState<
     Record<string, Record<string, unknown>>
@@ -442,8 +466,15 @@ export default function App() {
       const isRunpod = form.compute === "runpod";
       const archValue = form.arch;
       const cfg = archCfgFor(archValue, archDefaults, savedArchs);
+      const isAvinash = archValue === "avinash_wall";
       const lrHint =
-        typeof cfg.lr_default === "number" ? Number(cfg.lr_default) : 0.0003;
+        typeof cfg.lr_default === "number"
+          ? Number(cfg.lr_default)
+          : isAvinash
+            ? 0.1
+            : 0.0003;
+      const gammaHint =
+        isAvinash && typeof cfg.gamma === "number" ? Number(cfg.gamma) : isAvinash ? 1.0 : 0.99;
       const body = {
         name: `${form.task}-${form.arch.replace(/^custom:/, "")}-${form.compute}`,
         sim: form.sim,
@@ -458,7 +489,7 @@ export default function App() {
           batch_size: 64,
           n_steps: nSteps,
           n_envs: 1,
-          gamma: 0.99,
+          gamma: gammaHint,
           device: isRunpod ? "cuda" : "cpu",
           seed: 0,
         },
@@ -1137,6 +1168,13 @@ export default function App() {
                   <p className="mt-3 text-xs text-[var(--muted)]">
                     Paper arches (arXiv:2502.06018 family): prefer RunPod + 100k wall_follow for
                     proof; use 2k/5k smoke first.
+                  </p>
+                )}
+                {form.arch === "avinash_wall" && (
+                  <p className="mt-3 text-xs text-[var(--muted)]">
+                    Tabular Q-learning (course P2_D3): PDF reward + 27×3 Q-table. Prefer wall_follow
+                    + 2k/5k smoke first; full PDF schedule ~200 episodes × 1200 steps (~240k). Ask
+                    before launching long 100k+ trains.
                   </p>
                 )}
                 {form.arch.startsWith("custom:") && (

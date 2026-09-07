@@ -46,6 +46,21 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "activation": "gelu",
         "lr_default": 3.0e-4,
     },
+    "avinash_wall": {
+        "algorithm": "q_learning",
+        "alpha": 0.1,
+        "gamma": 1.0,
+        "epsilon_start": 1.0,
+        "epsilon_end": 0.1,
+        "epsilon_decay": 0.05,
+        "explore_episodes": 200,
+        "episode_max_steps": 1200,
+        "linear_vel": 0.3,
+        "angular_vel": 0.7,
+        "near_max": 0.7,
+        "medium_max": 0.9,
+        "lr_default": 0.1,
+    },
 }
 
 BUILTIN_META: dict[str, dict[str, str]] = {
@@ -78,6 +93,12 @@ BUILTIN_META: dict[str, dict[str, str]] = {
         "paper": "Dong et al. arXiv:2410.02675",
         "blurb": "Fourier Analysis Network–style layer: cos/sin path plus nonlinear σ path.",
         "docs_url": "https://arxiv.org/abs/2410.02675",
+    },
+    "avinash_wall": {
+        "label": "Avinash Wall Follow",
+        "paper": "Course P2_D3 — Q-learning wall follow",
+        "blurb": "Tabular Q-learning wall follower (27 states × 3 actions) from the Robotics course project — PDF reward, ε-greedy, α=0.1, γ=1.0.",
+        "docs_url": "https://github.com/navinash47/robolab/blob/main/docs/AVINASH_WALL.md",
     },
 }
 

@@ -1,0 +1,17 @@
+name: avinash_wall_follow
+base_arch: avinash_wall
+arch_cfg:
+  algorithm: q_learning
+  alpha: 0.1
+  gamma: 1.0
+  epsilon_start: 1.0
+  epsilon_end: 0.1
+  epsilon_decay: 0.05
+  explore_episodes: 200
+  episode_max_steps: 1200
+  linear_vel: 0.3
+  angular_vel: 0.7
+  near_max: 0.7
+  medium_max: 0.9
+  lr_default: 0.1
+notes: Course P2_D3 tabular Q-learning wall follower (PDF reward / state / actions).

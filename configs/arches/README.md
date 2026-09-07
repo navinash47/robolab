@@ -9,3 +9,6 @@
 #   activation_expectation: 1.64
 #   use_layernorm: true
 #   spline_dropout: 0.0
+
+# avinash_wall — course P2_D3 tabular Q-learning wall follower
+# See docs/AVINASH_WALL.md and configs/arches/avinash_wall_follow.yaml

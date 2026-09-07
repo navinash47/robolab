@@ -56,6 +56,12 @@ def build_env(cfg: RunConfig):
 
 
 def train(cfg: RunConfig, run_id: str, backend_url: str) -> dict:
+    # Tabular Q-learning / SARSA from course project — not SB3 PPO.
+    if cfg.arch == "avinash_wall":
+        from robolab.train.q_tabular import train_avinash_wall
+
+        return train_avinash_wall(cfg, run_id, backend_url)
+
     import wandb
 
     api_key = os.environ.get("WANDB_API_KEY", "").strip()

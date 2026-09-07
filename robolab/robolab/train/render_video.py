@@ -332,7 +332,15 @@ def record_playback_mp4(
             fps=fps,
         )
 
-        model = PPO.load(str(ckpt_path), device="cpu")
+        use_avinash = cfg.arch == "avinash_wall"
+        model = None
+        q_agent = None
+        if use_avinash:
+            from robolab.archs.avinash_wall import TabularQAgent
+
+            q_agent = TabularQAgent.load_zip(Path(ckpt_path), cfg=dict(cfg.arch_cfg or {}))
+        else:
+            model = PPO.load(str(ckpt_path), device="cpu")
         try:
             obs, _info = env.reset(seed=seed)
             base = env.unwrapped
@@ -349,9 +357,15 @@ def record_playback_mp4(
             # (steps >= task.max_steps); this loop must not cut earlier.
             max_steps = budget + 50
             while not (terminated or truncated) and steps < max_steps:
-                action, _ = model.predict(obs, deterministic=True)
-                if long_wall_follow:
-                    action = _stabilize_wall_follow_action(obs, action)
+                if q_agent is not None:
+                    ranges = np.asarray(obs, dtype=np.float64).reshape(-1)[:5]
+                    if hasattr(base, "_lidar"):
+                        ranges = np.asarray(base._lidar(), dtype=np.float64)
+                    action = q_agent.act_normalized(ranges, deterministic=True)
+                else:
+                    action, _ = model.predict(obs, deterministic=True)  # type: ignore[union-attr]
+                    if long_wall_follow:
+                        action = _stabilize_wall_follow_action(obs, action)
                 obs, _reward, terminated, truncated, _info = env.step(action)
                 steps += 1
         finally:
