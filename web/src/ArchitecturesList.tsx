@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { ArchHoverCard, resolveArchDisplay } from "./ArchHover";
 import {
   ARCH_PAGE_SIZES,
   BUILTIN_DEFAULT_CFG,
@@ -40,25 +41,10 @@ type Props = {
   savedArchs: SavedArchRow[];
   onUse: (archValue: string) => void;
   onDeleteSaved: (id: string) => void;
+  /** Open a specific arch detail when navigating from Experiments hover. */
+  initialDetailKey?: string | null;
+  onInitialDetailConsumed?: () => void;
 };
-
-function HoverCard({
-  title,
-  subtitle,
-  body,
-}: {
-  title: string;
-  subtitle?: string;
-  body: string;
-}) {
-  return (
-    <div className="arch-hover-card" role="tooltip">
-      <div className="arch-hover-card__title">{title}</div>
-      {subtitle ? <div className="arch-hover-card__sub">{subtitle}</div> : null}
-      <p className="arch-hover-card__body">{body}</p>
-    </div>
-  );
-}
 
 function hyperparamsEntries(cfg: Record<string, unknown>): [string, string][] {
   return Object.entries(cfg).map(([k, v]) => [
@@ -73,10 +59,19 @@ export function ArchitecturesList({
   savedArchs,
   onUse,
   onDeleteSaved,
+  initialDetailKey = null,
+  onInitialDetailConsumed,
 }: Props) {
   const [pageSize, setPageSize] = useState<ArchPageSize>(10);
   const [page, setPage] = useState(0);
-  const [detailKey, setDetailKey] = useState<string | null>(null);
+  const [detailKey, setDetailKey] = useState<string | null>(initialDetailKey);
+
+  useEffect(() => {
+    if (initialDetailKey) {
+      setDetailKey(initialDetailKey);
+      onInitialDetailConsumed?.();
+    }
+  }, [initialDetailKey, onInitialDetailConsumed]);
 
   const items: ListItem[] = useMemo(() => {
     const builtins: ListItem[] = [...archs]
@@ -115,27 +110,6 @@ export function ArchitecturesList({
 
   const pageItems = items.slice(page * pageSize, page * pageSize + pageSize);
   const detail = detailKey ? items.find((i) => i.key === detailKey) ?? null : null;
-
-  function blurbFor(item: ListItem): { title: string; subtitle?: string; body: string } {
-    if (item.kind === "builtin") {
-      const m = builtinMeta(item.name);
-      return {
-        title: m?.label ?? item.name,
-        subtitle: m?.paper,
-        body: m?.short ?? "Builtin architecture.",
-      };
-    }
-    const base = builtinMeta(item.base_arch);
-    const notes = item.notes.trim();
-    const knobs = formatCfgSummary(item.cfg);
-    return {
-      title: item.name,
-      subtitle: `Saved · base ${base?.label ?? item.base_arch}`,
-      body: notes
-        ? `${notes} — ${knobs}`
-        : `Custom ${base?.label ?? item.base_arch} config — ${knobs}`,
-    };
-  }
 
   if (detail) {
     const m = builtinMeta(detail.base_arch);
@@ -310,7 +284,10 @@ export function ArchitecturesList({
             </thead>
             <tbody>
               {pageItems.map((item) => {
-                const tip = blurbFor(item);
+                const tip = resolveArchDisplay(
+                  item.kind === "builtin" ? item.name : `custom:${item.id}`,
+                  savedArchs,
+                );
                 const display =
                   item.kind === "builtin"
                     ? (builtinMeta(item.name)?.label ?? item.name)
@@ -331,7 +308,7 @@ export function ArchitecturesList({
                         <span className="ml-1 font-mono text-xs font-normal text-[var(--muted)]">
                           ({item.kind === "builtin" ? item.name : item.base_arch})
                         </span>
-                        <HoverCard
+                        <ArchHoverCard
                           title={tip.title}
                           subtitle={tip.subtitle}
                           body={tip.body}

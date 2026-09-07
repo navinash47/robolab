@@ -19,6 +19,7 @@ import {
   type SortKey,
 } from "./experimentsQuery";
 import { ArchitecturesList } from "./ArchitecturesList";
+import { ArchHoverLabel } from "./ArchHover";
 import { builtinMeta, PAGE_SIZES, type PageSize } from "./archMeta";
 
 type Budget = {
@@ -215,6 +216,7 @@ export default function App() {
   const [view, setView] = useState<"experiments" | "compare" | "architectures">(
     "experiments",
   );
+  const [archDetailKey, setArchDetailKey] = useState<string | null>(null);
   const [budget, setBudget] = useState<Budget | null>(null);
   const [wandb, setWandb] = useState<WandbStatus | null>(null);
   const [archs, setArchs] = useState<string[]>(["mlp", "kan", "kaf", "gpkan", "fan"]);
@@ -847,7 +849,10 @@ export default function App() {
                 ? "bg-[var(--accent)] text-white"
                 : "border border-[var(--border)] bg-[var(--surface)]"
             }`}
-            onClick={() => setView("architectures")}
+            onClick={() => {
+              setArchDetailKey(null);
+              setView("architectures");
+            }}
           >
             Architectures
           </button>
@@ -1442,7 +1447,17 @@ export default function App() {
                           ) : null}
                         </td>
                         <td className="px-4 py-3">{r.sim}</td>
-                        <td className="px-4 py-3">{r.arch}</td>
+                        <td className="relative px-4 py-3">
+                          <ArchHoverLabel
+                            arch={r.arch}
+                            savedArchs={savedArchs}
+                            testId={`arch-label-${r.id}`}
+                            onOpenArchitectures={(detailKey) => {
+                              setArchDetailKey(detailKey ?? null);
+                              setView("architectures");
+                            }}
+                          />
+                        </td>
                         <td className="px-4 py-3">
                           <span
                             className={`inline-block rounded px-2 py-0.5 text-xs font-medium ${statusClass(r.status)}`}
@@ -1758,9 +1773,12 @@ export default function App() {
               archs={archs}
               archDefaults={archDefaults}
               savedArchs={savedArchs}
+              initialDetailKey={archDetailKey}
+              onInitialDetailConsumed={() => setArchDetailKey(null)}
               onUse={(archValue) => {
                 setForm((f) => ({ ...f, arch: archValue }));
                 setShowNewRun(true);
+                setArchDetailKey(null);
                 setView("experiments");
               }}
               onDeleteSaved={(id) => void deleteArchitecture(id)}
