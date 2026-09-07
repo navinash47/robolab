@@ -49,19 +49,35 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
 }
 
 BUILTIN_META: dict[str, dict[str, str]] = {
-    "mlp": {"label": "MLP", "paper": "baseline"},
-    "kan": {"label": "KAN (B-spline)", "paper": "Liu et al. / efficient-kan"},
+    "mlp": {
+        "label": "MLP",
+        "paper": "baseline",
+        "blurb": "Classic multilayer perceptron — dense layers with a fixed activation.",
+        "docs_url": "https://github.com/navinash47/robolab/blob/main/docs/PHASE_ARCH_BUILDER_APIS.md",
+    },
+    "kan": {
+        "label": "KAN (B-spline)",
+        "paper": "Liu et al. / efficient-kan",
+        "blurb": "Kolmogorov–Arnold network with learnable B-spline edge functions.",
+        "docs_url": "https://github.com/navinash47/robolab/blob/main/docs/PHASE_ARCH_BUILDER_APIS.md",
+    },
     "kaf": {
         "label": "KAF (Kolmogorov-Arnold Fourier)",
         "paper": "arXiv:2502.06018",
+        "blurb": "RFF + GELU hybrid from Kolmogorov–Arnold Fourier Networks (arXiv:2502.06018).",
+        "docs_url": "https://arxiv.org/abs/2502.06018",
     },
     "gpkan": {
         "label": "GPKAN (Gaussian RBF KAN)",
         "paper": "KAF baseline / GP-KAN spirit arXiv:2407.18397",
+        "blurb": "Gaussian RBF–KAN baseline — GELU base plus learnable RBF centers per edge.",
+        "docs_url": "https://arxiv.org/abs/2407.18397",
     },
     "fan": {
         "label": "FAN (Fourier Analysis Network)",
         "paper": "Dong et al. arXiv:2410.02675",
+        "blurb": "Fourier Analysis Network–style layer: cos/sin path plus nonlinear σ path.",
+        "docs_url": "https://arxiv.org/abs/2410.02675",
     },
 }
 
@@ -206,12 +222,16 @@ def list_architectures(session: SessionDep) -> dict:
 
     builtins = []
     for name in list_archs():
-        meta = BUILTIN_META.get(name, {"label": name, "paper": ""})
+        meta = BUILTIN_META.get(
+            name, {"label": name, "paper": "", "blurb": "", "docs_url": ""}
+        )
         builtins.append(
             {
                 "name": name,
-                "label": meta["label"],
-                "paper": meta["paper"],
+                "label": meta.get("label", name),
+                "paper": meta.get("paper", ""),
+                "blurb": meta.get("blurb", ""),
+                "docs_url": meta.get("docs_url", ""),
                 "cfg": default_cfg(name),
                 "builtin": True,
             }

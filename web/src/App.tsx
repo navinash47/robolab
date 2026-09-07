@@ -18,6 +18,8 @@ import {
   type ExperimentFilters,
   type SortKey,
 } from "./experimentsQuery";
+import { ArchitecturesList } from "./ArchitecturesList";
+import { builtinMeta } from "./archMeta";
 
 type Budget = {
   budget_usd_cap: number;
@@ -909,16 +911,31 @@ export default function App() {
                       data-testid="arch-select"
                     >
                       <optgroup label="Builtins">
-                        {archs.map((a) => (
-                          <option key={a} value={a}>
-                            {a}
-                          </option>
-                        ))}
+                        {archs.map((a) => {
+                          const m = builtinMeta(a);
+                          return (
+                            <option
+                              key={a}
+                              value={a}
+                              title={m ? `${m.label} — ${m.short}` : a}
+                            >
+                              {m ? `${m.label} (${a})` : a}
+                            </option>
+                          );
+                        })}
                       </optgroup>
                       {savedArchs.length > 0 && (
                         <optgroup label="Saved">
                           {savedArchs.map((s) => (
-                            <option key={s.id} value={`custom:${s.id}`}>
+                            <option
+                              key={s.id}
+                              value={`custom:${s.id}`}
+                              title={
+                                s.notes?.trim()
+                                  ? s.notes
+                                  : `${s.name} (${s.base_arch})`
+                              }
+                            >
                               {s.name} ({s.base_arch})
                             </option>
                           ))}
@@ -1676,11 +1693,14 @@ export default function App() {
                     onChange={(e) => applyBuilderBase(e.target.value)}
                     data-testid="builder-base"
                   >
-                    {archs.map((a) => (
-                      <option key={a} value={a}>
-                        {a}
-                      </option>
-                    ))}
+                    {archs.map((a) => {
+                      const m = builtinMeta(a);
+                      return (
+                        <option key={a} value={a} title={m?.short ?? a}>
+                          {m ? `${m.label} (${a})` : a}
+                        </option>
+                      );
+                    })}
                   </select>
                 </label>
                 <label className="text-sm">
@@ -1871,56 +1891,17 @@ export default function App() {
               </div>
             </div>
 
-            <h3 className="mb-2 text-base font-medium">Saved architectures</h3>
-            {savedArchs.length === 0 ? (
-              <p className="text-sm text-[var(--muted)]" data-testid="saved-archs-empty">
-                None yet — save one above.
-              </p>
-            ) : (
-              <table className="w-full text-left text-sm" data-testid="saved-archs-table">
-                <thead>
-                  <tr className="border-b border-[var(--border)] text-[var(--muted)]">
-                    <th className="py-2 pr-3 font-medium">Name</th>
-                    <th className="py-2 pr-3 font-medium">Base</th>
-                    <th className="py-2 pr-3 font-medium">Id</th>
-                    <th className="py-2 font-medium">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {savedArchs.map((s) => (
-                    <tr
-                      key={s.id}
-                      className="border-b border-[var(--border)]"
-                      data-testid={`saved-arch-${s.id}`}
-                    >
-                      <td className="py-2 pr-3 font-medium">{s.name}</td>
-                      <td className="py-2 pr-3">{s.base_arch}</td>
-                      <td className="py-2 pr-3 font-mono text-xs">{s.id}</td>
-                      <td className="py-2">
-                        <button
-                          type="button"
-                          className="mr-2 text-[var(--accent)] underline"
-                          onClick={() => {
-                            setForm((f) => ({ ...f, arch: `custom:${s.id}` }));
-                            setShowNewRun(true);
-                            setView("experiments");
-                          }}
-                        >
-                          Use
-                        </button>
-                        <button
-                          type="button"
-                          className="text-red-700 underline"
-                          onClick={() => void deleteArchitecture(s.id)}
-                        >
-                          Delete
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
+            <ArchitecturesList
+              archs={archs}
+              archDefaults={archDefaults}
+              savedArchs={savedArchs}
+              onUse={(archValue) => {
+                setForm((f) => ({ ...f, arch: archValue }));
+                setShowNewRun(true);
+                setView("experiments");
+              }}
+              onDeleteSaved={(id) => void deleteArchitecture(id)}
+            />
           </div>
         )}
 
