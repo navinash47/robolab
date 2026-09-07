@@ -253,6 +253,23 @@ def create_run(body: RunConfig, session: SessionDep) -> dict:
     )
     body = body.model_copy(update={"arch": base_arch, "arch_cfg": arch_cfg})
 
+    # Tabular arch always uses Q-learning; neural FA Q only for mlp/kan/kaf/gpkan/fan.
+    algo = str(body.trainer.algo or "ppo").lower()
+    if base_arch == "avinash_wall":
+        if algo != "q_learning":
+            body = body.model_copy(
+                update={"trainer": body.trainer.model_copy(update={"algo": "q_learning"})}
+            )
+    elif algo == "q_learning":
+        from robolab.train.q_fa import QL_ARCHS
+
+        if base_arch not in QL_ARCHS:
+            raise HTTPException(
+                400,
+                f"trainer.algo=q_learning requires arch in {sorted(QL_ARCHS)} "
+                f"or avinash_wall; got {base_arch!r}",
+            )
+
     run_id = uuid.uuid4().hex[:12]
     arch_label = saved_name or body.arch
     name = body.name or f"{body.task}-{arch_label}-{body.compute}"

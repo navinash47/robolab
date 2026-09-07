@@ -333,12 +333,18 @@ def record_playback_mp4(
         )
 
         use_avinash = cfg.arch == "avinash_wall"
+        use_q_fa = (not use_avinash) and str(cfg.trainer.algo or "").lower() == "q_learning"
         model = None
         q_agent = None
+        q_fa_agent = None
         if use_avinash:
             from robolab.archs.avinash_wall import TabularQAgent
 
             q_agent = TabularQAgent.load_zip(Path(ckpt_path), cfg=dict(cfg.arch_cfg or {}))
+        elif use_q_fa:
+            from robolab.train.q_fa import FunctionApproxQAgent
+
+            q_fa_agent = FunctionApproxQAgent.load_zip(Path(ckpt_path), device="cpu")
         else:
             model = PPO.load(str(ckpt_path), device="cpu")
         try:
@@ -362,6 +368,13 @@ def record_playback_mp4(
                     if hasattr(base, "_lidar"):
                         ranges = np.asarray(base._lidar(), dtype=np.float64)
                     action = q_agent.act_normalized(ranges, deterministic=True)
+                elif q_fa_agent is not None:
+                    ranges = np.asarray(obs, dtype=np.float64).reshape(-1)[:5]
+                    if hasattr(base, "_lidar"):
+                        ranges = np.asarray(base._lidar(), dtype=np.float64)
+                    action = q_fa_agent.act_normalized(
+                        np.asarray(obs, dtype=np.float32), ranges, deterministic=True
+                    )
                 else:
                     action, _ = model.predict(obs, deterministic=True)  # type: ignore[union-attr]
                     if long_wall_follow:

@@ -12,3 +12,5 @@
 
 # avinash_wall — course P2_D3 tabular Q-learning wall follower
 # See docs/AVINASH_WALL.md and configs/arches/avinash_wall_follow.yaml
+# Neural arches (kaf/kan/gpkan/fan/mlp) can use the same PDF task via
+# trainer.algo: q_learning (function-approx Q) — see docs/AVINASH_WALL.md.

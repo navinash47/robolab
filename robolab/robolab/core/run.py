@@ -32,7 +32,7 @@ class DomainParams(BaseModel):
 class TrainerCfg(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    algo: Literal["ppo", "sac"] = "ppo"
+    algo: Literal["ppo", "sac", "q_learning"] = "ppo"
     timesteps: int = Field(default=50_000, ge=1, le=10_000_000)
     lr: float = 3e-4
     batch_size: int = 64

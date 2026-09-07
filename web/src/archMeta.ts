@@ -67,7 +67,7 @@ export const BUILTIN_ARCH_META: Record<BuiltinArchKey, ArchMeta> = {
     key: "avinash_wall",
     label: "Avinash Wall Follow",
     short: "Tabular Q-learning wall follower from the Robotics course project (P2_D3).",
-    long: "Course-project wall follower: 3 lidar sectors × 3 distance bins (27 states), 3 actions (turn left / forward / turn right) at 0.3 m/s, and the PDF piecewise reward (+20 optimal right distance, +15/−8 front-near turn logic, −5 far, −1 near). Trains with Q-learning (α=0.1, γ=1.0, ε 1.0→0.1 over 200 episodes) via a dedicated tabular runner — not SB3 PPO. SARSA is available via arch_cfg.algorithm=sarsa.",
+    long: "Course-project wall follower: 3 lidar sectors × 3 distance bins (27 states), 3 actions (turn left / forward / turn right) at 0.3 m/s, and the PDF piecewise reward (+20 optimal right distance, +15/−8 front-near turn logic, −5 far, −1 near). Trains with tabular Q-learning (α=0.1, γ=1.0, ε 1.0→0.1 over 200 episodes) — not SB3 PPO. For the same PDF task with a neural Q-network, pick Arch=kaf|kan|gpkan|fan|mlp and Algo=Q-learning. SARSA is available via arch_cfg.algorithm=sarsa on the tabular path.",
     docsLabel: "AVINASH_WALL.md",
     docsUrl: AVINASH_WALL_DOCS,
     paper: "Course P2_D3 — Q-learning",

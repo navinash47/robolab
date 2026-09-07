@@ -20,7 +20,7 @@ import {
 } from "./experimentsQuery";
 import { ArchitecturesList } from "./ArchitecturesList";
 import { ArchHoverLabel } from "./ArchHover";
-import { builtinMeta, PAGE_SIZES, type PageSize } from "./archMeta";
+import { builtinMeta, BUILTIN_DEFAULT_CFG, PAGE_SIZES, type PageSize } from "./archMeta";
 
 type Budget = {
   budget_usd_cap: number;
@@ -273,6 +273,7 @@ export default function App() {
   const [form, setForm] = useState({
     compute: "local",
     arch: "mlp",
+    algo: "ppo" as "ppo" | "q_learning",
     task: "wall_follow",
     sim: "mujoco",
     robot: "diffdrive_lidar",
@@ -343,7 +344,15 @@ export default function App() {
       }
       if (archsRes.ok) {
         const a = (await archsRes.json()) as ArchsResponse;
-        if (a.archs?.length) setArchs(a.archs);
+        if (a.archs?.length) {
+          // Keep known builtins visible even if a stale API process omits a new arch.
+          const known = Object.keys(BUILTIN_DEFAULT_CFG);
+          setArchs(
+            Array.from(new Set([...a.archs, ...known])).sort((x, y) =>
+              x.localeCompare(y),
+            ),
+          );
+        }
         if (a.saved) setSavedArchs(a.saved);
         if (a.defaults) setArchDefaults(a.defaults);
       }
@@ -467,23 +476,52 @@ export default function App() {
       const archValue = form.arch;
       const cfg = archCfgFor(archValue, archDefaults, savedArchs);
       const isAvinash = archValue === "avinash_wall";
+      const algo: "ppo" | "q_learning" = isAvinash
+        ? "q_learning"
+        : form.algo === "q_learning"
+          ? "q_learning"
+          : "ppo";
+      const isQl = algo === "q_learning";
+      // Neural FA Q-learning shares the PDF wall-follow schedule knobs.
+      const qlSchedule = {
+        algorithm: "q_learning",
+        epsilon_start: 1.0,
+        epsilon_end: 0.1,
+        epsilon_decay: 0.05,
+        explore_episodes: 200,
+        episode_max_steps: 1200,
+        linear_vel: 0.3,
+        angular_vel: 0.7,
+        near_max: 0.7,
+        medium_max: 0.9,
+        gamma: 1.0,
+      };
+      const mergedCfg =
+        isQl && !isAvinash
+          ? { ...qlSchedule, ...cfg, gamma: typeof cfg.gamma === "number" ? cfg.gamma : 1.0 }
+          : cfg;
       const lrHint =
-        typeof cfg.lr_default === "number"
-          ? Number(cfg.lr_default)
+        typeof mergedCfg.lr_default === "number"
+          ? Number(mergedCfg.lr_default)
           : isAvinash
             ? 0.1
-            : 0.0003;
-      const gammaHint =
-        isAvinash && typeof cfg.gamma === "number" ? Number(cfg.gamma) : isAvinash ? 1.0 : 0.99;
+            : isQl
+              ? 0.0003
+              : 0.0003;
+      const gammaHint = isQl
+        ? typeof mergedCfg.gamma === "number"
+          ? Number(mergedCfg.gamma)
+          : 1.0
+        : 0.99;
       const body = {
-        name: `${form.task}-${form.arch.replace(/^custom:/, "")}-${form.compute}`,
+        name: `${form.task}-${form.arch.replace(/^custom:/, "")}-${algo}-${form.compute}`,
         sim: form.sim,
         task: form.task,
         robot: form.robot,
         arch: archValue,
-        arch_cfg: cfg,
+        arch_cfg: mergedCfg,
         trainer: {
-          algo: "ppo",
+          algo,
           timesteps: steps,
           lr: lrHint,
           batch_size: 64,
@@ -970,15 +1008,17 @@ export default function App() {
                               `custom:${s.id}` === next &&
                               ["kaf", "gpkan", "fan"].includes(s.base_arch),
                           );
+                        const forceQl = next === "avinash_wall";
                         setForm({
                           ...form,
                           arch: next,
+                          algo: forceQl ? "q_learning" : form.algo,
                           timesteps:
-                            paperish && form.timesteps < 100_000
+                            paperish && form.timesteps < 100_000 && form.algo === "ppo"
                               ? 100_000
                               : form.timesteps,
                         });
-                        if (paperish && form.timesteps < 100_000) {
+                        if (paperish && form.timesteps < 100_000 && form.algo === "ppo") {
                           setTimestepMode("preset");
                         }
                       }}
@@ -1015,6 +1055,31 @@ export default function App() {
                           ))}
                         </optgroup>
                       )}
+                    </select>
+                  </label>
+                  <label className="text-sm">
+                    <span className="mb-1 block text-[var(--muted)]">Algo</span>
+                    <select
+                      className="w-full rounded border border-[var(--border)] bg-white px-3 py-2"
+                      value={form.arch === "avinash_wall" ? "q_learning" : form.algo}
+                      disabled={form.arch === "avinash_wall"}
+                      onChange={(e) =>
+                        setForm({
+                          ...form,
+                          algo: e.target.value as "ppo" | "q_learning",
+                        })
+                      }
+                      data-testid="algo-select"
+                      title={
+                        form.arch === "avinash_wall"
+                          ? "Tabular avinash_wall always uses Q-learning"
+                          : "PPO (SB3) or PDF wall-follow Q-learning with this arch as Q-network"
+                      }
+                    >
+                      <option value="ppo">PPO (SB3)</option>
+                      <option value="q_learning">
+                        Q-learning (PDF wall-follow)
+                      </option>
                     </select>
                   </label>
                   <label className="text-sm">
@@ -1172,9 +1237,16 @@ export default function App() {
                 )}
                 {form.arch === "avinash_wall" && (
                   <p className="mt-3 text-xs text-[var(--muted)]">
-                    Tabular Q-learning (course P2_D3): PDF reward + 27×3 Q-table. Prefer wall_follow
-                    + 2k/5k smoke first; full PDF schedule ~200 episodes × 1200 steps (~240k). Ask
-                    before launching long 100k+ trains.
+                    Tabular Q-learning (course P2_D3): PDF reward + 27×3 Q-table. Algo is fixed to
+                    Q-learning. Prefer wall_follow + 2k/5k smoke first; full PDF schedule ~200
+                    episodes × 1200 steps (~240k). Ask before launching long 100k+ trains.
+                  </p>
+                )}
+                {form.algo === "q_learning" && form.arch !== "avinash_wall" && (
+                  <p className="mt-3 text-xs text-[var(--muted)]">
+                    Function-approx Q-learning: same PDF 3 actions / reward / ε schedule as
+                    avinash_wall, with <code>{form.arch}</code> as the Q-network tower (not PPO).
+                    Prefer 2k/5k smoke first.
                   </p>
                 )}
                 {form.arch.startsWith("custom:") && (

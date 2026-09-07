@@ -56,11 +56,16 @@ def build_env(cfg: RunConfig):
 
 
 def train(cfg: RunConfig, run_id: str, backend_url: str) -> dict:
-    # Tabular Q-learning / SARSA from course project — not SB3 PPO.
-    if cfg.arch == "avinash_wall":
-        from robolab.train.q_tabular import train_avinash_wall
+    # PDF wall-follow Q-learning: tabular (avinash_wall) or function-approx (kan/kaf/…).
+    algo = str(cfg.trainer.algo or "ppo").lower()
+    if cfg.arch == "avinash_wall" or algo == "q_learning":
+        if cfg.arch == "avinash_wall":
+            from robolab.train.q_tabular import train_avinash_wall
 
-        return train_avinash_wall(cfg, run_id, backend_url)
+            return train_avinash_wall(cfg, run_id, backend_url)
+        from robolab.train.q_fa import train_q_fa
+
+        return train_q_fa(cfg, run_id, backend_url)
 
     import wandb
 
