@@ -115,6 +115,7 @@ class DiffDriveLidarGenesisEnv(gym.Env):
         self._steps = 0
         self._success_streak = 0
         self._wall_contact = False
+        self._prev_dist_to_goal: float | None = None
         self._control_dt = 1.0 / max(1e-6, domain.control_hz)
         self._physics_dt = self._control_dt / max(1, domain.physics_substeps)
         self._xy = np.array([*self._layout.spawn_xy], dtype=np.float64)
@@ -217,7 +218,12 @@ class DiffDriveLidarGenesisEnv(gym.Env):
             out = np.clip(out, 0.0, LIDAR_MAX)
         return out
 
-    def _pack(self, ranges: np.ndarray, forward_speed: float) -> tuple[np.ndarray, dict]:
+    def _pack(
+        self,
+        ranges: np.ndarray,
+        forward_speed: float,
+        angular_vel: float = 0.0,
+    ) -> tuple[np.ndarray, dict]:
         pos = np.array([self._xy[0], self._xy[1], 0.05], dtype=np.float64)
         extra = enrich_task_info(
             self.task.name,
@@ -233,6 +239,8 @@ class DiffDriveLidarGenesisEnv(gym.Env):
             "ranges": ranges.copy(),
             "position": pos,
             "forward_speed": forward_speed,
+            "angular_vel": float(angular_vel),
+            "prev_dist_to_goal": self._prev_dist_to_goal,
             "steps": self._steps,
             "control_hz": self.domain.control_hz,
             "physics_substeps": self.domain.physics_substeps,
@@ -242,6 +250,11 @@ class DiffDriveLidarGenesisEnv(gym.Env):
             **extra,
         }
         return obs.astype(np.float32), info
+
+    def _remember_dist(self, info: dict) -> None:
+        d = info.get("dist_to_goal")
+        if d is not None:
+            self._prev_dist_to_goal = float(d)
 
     def reset(self, *, seed: int | None = None, options: dict | None = None):
         super().reset(seed=seed)
@@ -261,9 +274,12 @@ class DiffDriveLidarGenesisEnv(gym.Env):
         self._steps = 0
         self._success_streak = 0
         self._wall_contact = False
+        self._prev_dist_to_goal = None
         self._path_s = 0.0
         ranges = self._lidar_ranges()
-        return self._pack(ranges, 0.0)
+        obs, info = self._pack(ranges, 0.0, 0.0)
+        self._remember_dist(info)
+        return obs, info
 
     def step(self, action):
         action = np.asarray(action, dtype=np.float64).reshape(-1)
@@ -292,8 +308,9 @@ class DiffDriveLidarGenesisEnv(gym.Env):
 
         self._steps += 1
         ranges = self._lidar_ranges()
-        obs, info = self._pack(ranges, v)
+        obs, info = self._pack(ranges, v, w)
         reward = float(self.task.reward(info)) if self.task.reward else 0.0
+        self._remember_dist(info)
         if self.task.success and self.task.success(info):
             self._success_streak += 1
         else:

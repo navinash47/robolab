@@ -87,12 +87,16 @@ cloudflared tunnel --url http://127.0.0.1:8000
 
 Copy the printed `https://….trycloudflare.com` URL into `.env` (no trailing slash). Restart API. Keep the tunnel alive for the whole RunPod run.
 
-## 4. Git hygiene (launch refuse conditions)
+## 4. Git hygiene (recommended, not a hard refuse)
+
+Dirty trees **do not** block New Run. Launch falls back to `origin/main` (or last pushed SHA) and logs a warning.
 
 ```bash
-git status          # must be clean
+git status          # optional: commit+push so the pod runs your latest local edits
 git push origin HEAD
 ```
+
+Only refuses when there is no git remote / no resolvable remote SHA (or invalid `GIT_SHA` override).
 
 ## 5. Network volume (active)
 

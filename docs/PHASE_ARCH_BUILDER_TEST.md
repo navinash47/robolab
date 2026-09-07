@@ -1,6 +1,6 @@
 # Phase: Architecture Builder + KAF/GPKAN/FAN — TEST notes
 
-**Status (2026-09-07):** Code + API + Architectures tab shipped. Local SB3 smoke (`learn` 128 steps) **COMPLETE** for `kaf` / `gpkan` / `fan` on `wall_follow` + mujoco. **100k RunPod proof not launched in this session** (dirty-tree gate → commit/push first; user runs matrix). Human UI gate awaiting confirm.
+**Status (2026-09-07):** Code + API + Architectures tab shipped. Local SB3 smoke (`learn` 128 steps) **COMPLETE** for `kaf` / `gpkan` / `fan` on `wall_follow` + mujoco. **100k RunPod proof** ready for user matrix (dirty-tree gate no longer blocks; falls back to remote SHA). Human UI gate awaiting confirm.
 
 ## Paper map (verified)
 

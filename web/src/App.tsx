@@ -1087,8 +1087,8 @@ export default function App() {
                 {form.compute === "runpod" && (
                   <p className="mt-3 text-xs text-[var(--muted)]">
                     Requires RUNPOD_API_KEY, RUNPOD_NETWORK_VOLUME_ID, ROBOLAB_WORKER_IMAGE,
-                    ROBOLAB_GIT_URL, BACKEND_PUBLIC_URL in .env. Clean + pushed git SHA.
-                    See docs/PHASE_3_TEST.md.
+                    ROBOLAB_GIT_URL, BACKEND_PUBLIC_URL in .env. Uses a pushed git SHA
+                    (dirty tree falls back to origin/main). See docs/PHASE_3_TEST.md.
                   </p>
                 )}
                 <div className="mt-4 flex gap-3">

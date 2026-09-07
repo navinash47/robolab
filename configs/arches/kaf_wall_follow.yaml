@@ -1,0 +1,12 @@
+name: kaf_wall_follow
+base_arch: kaf
+arch_cfg:
+  hidden_sizes:
+  - 64
+  - 64
+  num_grids: 8
+  activation_expectation: 1.64
+  use_layernorm: true
+  spline_dropout: 0
+  lr_default: 0.0003
+notes: ''

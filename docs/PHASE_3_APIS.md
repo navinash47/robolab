@@ -227,13 +227,17 @@ Backend watchdog: `terminate_pod()` tries REST v2 DELETE, then SDK GraphQL.
 
 ## Git gate before launch
 
-Prompt: resolve current git SHA; **must be clean and pushed**; refuse otherwise.
+Resolve a SHA the pod can `git clone` from `ROBOLAB_GIT_URL`. **Dirty working tree does not refuse.**
 
-- Dirty tree → refuse
-- No `git remote` → refuse (local-only repo cannot be cloned on the pod) — document in `PHASE_3_TEST.md`
-- SHA not on any remote → refuse (not pushed)
+| Condition | Behavior |
+|---|---|
+| `GIT_SHA` env set | Pin that SHA (must exist on a remote) |
+| Clean tree + HEAD on remote | Use HEAD (reproducible) |
+| Dirty tree | Warn + Failure Resolution logistics note; use pushed HEAD or `origin/main` |
+| Unpushed HEAD (clean or dirty) | Fall back to `origin/main` (or other remote tip) with warning |
+| No git remote / no resolvable remote tip | Refuse |
 
-Override is **not** implemented (cost safety > convenience).
+Pods never see uncommitted local edits — commit+push when you need the pod to run those changes.
 
 ## Watchdog rules (backend)
 

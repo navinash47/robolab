@@ -47,8 +47,11 @@ def suggest_fix_for_error(error: str | None) -> str | None:
         return "Worker image needs EGL/MuJoCo GL deps; rebuild/push worker image."
     if "nvidia driver" in e or "cuda" in e and ("old" in e or "driver" in e):
         return "Pick a Secure GPU template whose driver matches the torch CUDA build."
-    if "git" in e and ("dirty" in e or "push" in e or "remote" in e):
-        return "Commit + push HEAD; set ROBOLAB_GIT_URL; launch only from a clean tree."
+    if "git" in e and ("remote" in e or "resolvable" in e or "push" in e or "git_sha" in e):
+        return (
+            "Push main (or set GIT_SHA to a remote commit); set ROBOLAB_GIT_URL. "
+            "Dirty trees no longer block — pods clone the remote fallback SHA."
+        )
     if "502" in e or "connection refused" in e or "api down" in e:
         return "Keep `make dev` + tunnel alive; refresh BACKEND_PUBLIC_URL if tunnel rotated."
     if "pod disappeared" in e:
@@ -245,6 +248,24 @@ _SEED_SPECS: list[dict[str, Any]] = [
         "suggested_fix": (
             "Keep `make dev` + cloudflared alive; refresh BACKEND_PUBLIC_URL if the "
             "tunnel URL rotated; never point pods at localhost."
+        ),
+    },
+    {
+        "key": "go-to-goal-spin-exploit",
+        "run_id": None,
+        "category": CATEGORY_EXPERIMENT,
+        "title": "go_to_goal: spin-in-place reward hack (heading farm)",
+        "reason": (
+            "Policies learned to rotate in place instead of navigating. Root cause: "
+            "dense reward used absolute proximity exp(-(d/2)^2) (nearly flat far from "
+            "goal) plus unconditional heading exp(-(yaw_err)^2) with no |yaw-rate| "
+            "penalty — spinning periodically zeros yaw_err and farms heading while "
+            "sparse goal bonus stayed hard. Mean return stayed negative / spin-dominated."
+        ),
+        "suggested_fix": (
+            "Reshape go_to_goal reward: delta-distance progress, heading gated on "
+            "forward motion, penalize |angular_vel| when not closing on goal; keep "
+            "resolve_wall_collision. See test_go_to_goal_reward.py."
         ),
     },
 ]

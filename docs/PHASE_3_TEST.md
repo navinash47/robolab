@@ -17,7 +17,7 @@ Infra:
 | `RUNPOD_CLOUD_TYPE` | **Must be SECURE** (default in code + `.env.example`; Community→Secure fallback on refuse) |
 | `make dev` + cloudflared | Keep alive; refresh `BACKEND_PUBLIC_URL` if tunnel URL changes |
 | Pods overnight | Prefer **0** (storage only) |
-| Dirty tree / unpushed HEAD | Launch git gate refuses dirty or unpushed HEAD |
+| Dirty tree / unpushed HEAD | Does **not** refuse — falls back to pushed HEAD / `origin/main` + warning |
 
 **Security:** A Docker Hub PAT was exposed in an earlier chat — **rotate it** at https://hub.docker.com/settings/security (do not paste the new token into chat).
 
@@ -87,7 +87,7 @@ ROBOLAB_GIT_URL=https://github.com/navinash47/robolab.git
 GITHUB_TOKEN=…   # required while repo is private (repo scope)
 ```
 
-Launch **refuses** if: dirty working tree, no git remote, or HEAD SHA not on a remote.
+Launch **refuses** only if: no git remote, or no resolvable remote SHA (and no valid `GIT_SHA` override). Dirty tree → warn + use `origin/main` / pushed HEAD.
 
 ### 6. Restart
 
@@ -105,7 +105,7 @@ After editing `.env`: stop `make dev`, start again.
 - [x] `WANDB_API_KEY` / `WANDB_PROJECT` set
 - [x] `BUDGET_USD_CAP` sensible
 - [ ] `make dev` restarted after latest `.env` edits (confirm live)
-- [ ] Working tree clean + HEAD pushed (launch git gate)
+- [ ] Remote SHA resolvable (`origin/main` or pushed HEAD; dirty tree OK)
 - [ ] Watchdog running (API lifespan starts it; no separate process)
 
 ## Offline / free checks (no GPU spend)
@@ -153,7 +153,7 @@ Use **2k (quick)** or **5k (smoke)** first. Keep `BUDGET_USD_CAP` low if nervous
 | 400 `RUNPOD_API_KEY is missing` | Empty `.env` key or forgot restart `make dev` |
 | 400 `RUNPOD_NETWORK_VOLUME_ID` | No volume / wrong id |
 | 400 `BACKEND_PUBLIC_URL` / localhost | Tunnel missing; pods need public URL |
-| 400 dirty tree / not on remote | Commit + push before launch |
+| 400 no resolvable remote SHA | Push `main` (or set `GIT_SHA`) — dirty tree alone no longer blocks |
 | 400 monthly budget exhausted | `CostLedger` sum ≥ `BUDGET_USD_CAP` |
 | trainer fail: `eglQueryString` / OpenGL NoneType | MuJoCo EGL broken in worker — use `MUJOCO_GL=osmesa` + libosmesa6 (fixed in entrypoint/Dockerfile) |
 | FAILED after ~10m with 0 steps / pod vanished | Watchdog promoted PROVISIONING→RUNNING on machine-up, then stale-heartbeat kill at 10m during `uv sync` — fixed (stay PROVISIONING until /heartbeat) |

@@ -233,73 +233,150 @@ def _configure_sdk(api_key: str | None = None) -> Any:
     return runpod
 
 
-def resolve_git_sha(root: Path | None = None) -> str:
-    """Return HEAD SHA only if working tree is clean and SHA is on a remote.
+def _git(args: list[str], root: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
-    No remote / not pushed → refuse (pod must `git clone` this SHA).
+
+def _sha_on_any_remote(sha: str, remotes: list[str], root: Path) -> bool:
+    for remote in remotes:
+        ls = _git(["ls-remote", remote], root)
+        if ls.returncode == 0 and sha in ls.stdout:
+            return True
+    return False
+
+
+def _remote_fallback_sha(root: Path, remotes: list[str]) -> str | None:
+    """Prefer origin/main (or master), then upstream tip, then any local remote-tracking tip on a remote."""
+    candidates: list[str] = []
+    if "origin" in remotes:
+        candidates.extend(["origin/main", "origin/master"])
+    for remote in remotes:
+        if remote != "origin":
+            candidates.extend([f"{remote}/main", f"{remote}/master"])
+    upstream = _git(["rev-parse", "--abbrev-ref", "@{u}"], root)
+    if upstream.returncode == 0 and upstream.stdout.strip():
+        candidates.append(upstream.stdout.strip())
+
+    seen: set[str] = set()
+    for ref in candidates:
+        if ref in seen:
+            continue
+        seen.add(ref)
+        tip = _git(["rev-parse", ref], root)
+        if tip.returncode != 0:
+            continue
+        sha = tip.stdout.strip()
+        if len(sha) >= 7 and _sha_on_any_remote(sha, remotes, root):
+            return sha
+    return None
+
+
+def _note_dirty_git_fallback(sha: str, reason: str) -> None:
+    """Warn + best-effort Failure Resolution logistics note (API may be absent)."""
+    msg = (
+        f"Working tree dirty or HEAD not on remote ({reason}). "
+        f"Launching with remote SHA {sha[:12]} instead of local HEAD. "
+        "Uncommitted local changes will not be on the pod."
+    )
+    logger.warning(msg)
+    try:
+        from sqlmodel import Session
+
+        from robolab_api.db import engine
+        from robolab_api.failures import CATEGORY_LOGISTICS, record_failure
+
+        with Session(engine) as session:
+            record_failure(
+                session,
+                category=CATEGORY_LOGISTICS,
+                title="git gate: dirty tree → remote SHA fallback",
+                reason=msg,
+                run_id=None,
+                suggested_fix=(
+                    "Optional: commit + push so launches pin your exact HEAD. "
+                    "Dirty trees no longer block; pods clone the remote fallback SHA."
+                ),
+                source="auto",
+                dedupe_auto=False,
+            )
+            session.commit()
+    except Exception:
+        # Compute layer / unit tests may run without the API package or DB.
+        pass
+
+
+def resolve_git_sha(root: Path | None = None) -> str:
+    """Return a git SHA the pod can clone from ROBOLAB_GIT_URL.
+
+    Resolution order:
+    1. ``GIT_SHA`` env override (explicit pin; must exist on a remote)
+    2. Clean tree + HEAD on a remote → HEAD (reproducible)
+    3. Dirty tree and/or unpushed HEAD → ``origin/main`` (or other remote tip),
+       with a warning — **never refuse solely because the tree is dirty**
+    4. No remote / no resolvable remote tip → refuse
     """
     root = root or repo_root()
-    porcelain = subprocess.run(
-        ["git", "status", "--porcelain"],
-        cwd=root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if porcelain.returncode != 0:
-        raise RunPodConfigError(f"git status failed: {porcelain.stderr.strip()}")
-    if porcelain.stdout.strip():
-        raise RunPodConfigError(
-            "Working tree is dirty. Commit or stash before launching a RunPod run "
-            "(pod clones a fixed GIT_SHA)."
-        )
 
-    remotes = subprocess.run(
-        ["git", "remote"],
-        cwd=root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if remotes.returncode != 0 or not remotes.stdout.strip():
+    remotes_proc = _git(["remote"], root)
+    if remotes_proc.returncode != 0 or not remotes_proc.stdout.strip():
         raise RunPodConfigError(
             "No git remote configured. RunPod workers `git clone` ROBOLAB_GIT_URL "
             "at GIT_SHA — add a remote, push, set ROBOLAB_GIT_URL in .env. "
             "See docs/PHASE_3_TEST.md (local-only limitation)."
         )
+    remotes = remotes_proc.stdout.split()
 
-    sha_proc = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    override = (os.environ.get("GIT_SHA") or "").strip()
+    if override:
+        if len(override) < 7:
+            raise RunPodConfigError("GIT_SHA env override is too short to be a commit SHA.")
+        if not _sha_on_any_remote(override, remotes, root):
+            raise RunPodConfigError(
+                f"GIT_SHA override {override[:12]} is not on any remote. "
+                "Push that commit (or unset GIT_SHA) before RunPod launch."
+            )
+        return override
+
+    porcelain = _git(["status", "--porcelain"], root)
+    if porcelain.returncode != 0:
+        raise RunPodConfigError(f"git status failed: {porcelain.stderr.strip()}")
+    dirty = bool(porcelain.stdout.strip())
+
+    sha_proc = _git(["rev-parse", "HEAD"], root)
     if sha_proc.returncode != 0:
         raise RunPodConfigError(f"git rev-parse failed: {sha_proc.stderr.strip()}")
-    sha = sha_proc.stdout.strip()
-    if len(sha) < 7:
+    head = sha_proc.stdout.strip()
+    if len(head) < 7:
         raise RunPodConfigError("Could not resolve git HEAD SHA.")
 
-    # Any remote containing this commit counts as "pushed".
-    found = False
-    for remote in remotes.stdout.split():
-        ls = subprocess.run(
-            ["git", "ls-remote", remote],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if ls.returncode == 0 and sha in ls.stdout:
-            found = True
-            break
-    if not found:
-        raise RunPodConfigError(
-            f"HEAD {sha[:12]} is not on any remote. Push before RunPod launch "
-            f"(pod must clone this SHA from ROBOLAB_GIT_URL)."
-        )
-    return sha
+    head_on_remote = _sha_on_any_remote(head, remotes, root)
+
+    # Clean + pushed HEAD → pin exact local checkout for reproducibility.
+    if not dirty and head_on_remote:
+        return head
+
+    # Dirty tree: never refuse. Prefer pushed HEAD; else origin/main (or remote tip).
+    if dirty and head_on_remote:
+        _note_dirty_git_fallback(head, "dirty working tree")
+        return head
+
+    fallback = _remote_fallback_sha(root, remotes)
+    if fallback:
+        reason = "dirty working tree" if dirty else f"HEAD {head[:12]} not on remote"
+        _note_dirty_git_fallback(fallback, reason)
+        return fallback
+
+    raise RunPodConfigError(
+        f"No resolvable remote git SHA (HEAD {head[:12]} not on remote; "
+        "origin/main unavailable). Push main (or set GIT_SHA) before RunPod launch "
+        "(pod must clone from ROBOLAB_GIT_URL)."
+    )
 
 
 def list_pods(api_key: str | None = None) -> list[dict[str, Any]]:

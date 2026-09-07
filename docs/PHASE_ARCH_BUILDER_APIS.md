@@ -175,7 +175,7 @@ flowchart LR
 - Do **not** vendor full KAF repo as a pip dep (license/print noise); **port** the layer into `robolab/archs/`.
 - Do **not** change `Architecture.forward` return type.
 - Do **not** commit `.env` / secrets.
-- Dirty-tree gate: commit + push before RunPod launch.
+- Dirty-tree gate: does not refuse; falls back to `origin/main` / pushed SHA (commit+push still needed for pod to see local edits).
 
 ---
 
