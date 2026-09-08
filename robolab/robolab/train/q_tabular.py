@@ -299,6 +299,25 @@ def train_avinash_wall(cfg: RunConfig, run_id: str, backend_url: str) -> dict:
             except Exception:
                 pass
 
+        transfer_report = None
+        if cfg.transfer_to:
+            try:
+                from robolab.train.transfer import run_transfer_eval
+
+                transfer_report = run_transfer_eval(
+                    cfg=cfg,
+                    checkpoint=ckpt_path,
+                    run_id=run_id,
+                    targets=list(cfg.transfer_to),
+                    n_episodes=int(os.environ.get("ROBOLAB_TRANSFER_EPISODES", "5")),
+                    wandb_run=wandb_run,
+                )
+            except Exception as transfer_exc:
+                transfer_report = {
+                    "status": "FAILED",
+                    "error": f"{type(transfer_exc).__name__}: {transfer_exc}",
+                }
+
         result = {
             "status": "COMPLETE",
             "wandb_url": wandb_url,
@@ -311,6 +330,7 @@ def train_avinash_wall(cfg: RunConfig, run_id: str, backend_url: str) -> dict:
             "act_dim": act_dim,
             "control_hz": control_hz,
             "physics_substeps": physics_substeps,
+            "transfer": transfer_report,
         }
         _post_json(f"{backend}/api/runs/{run_id}/complete", result)
         return result

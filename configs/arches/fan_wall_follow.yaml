@@ -1,0 +1,10 @@
+name: fan_wall_follow
+base_arch: fan
+arch_cfg:
+  hidden_sizes:
+  - 64
+  - 64
+  p_ratio: 0.25
+  activation: gelu
+  lr_default: 0.0003
+notes: ''

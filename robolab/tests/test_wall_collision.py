@@ -53,7 +53,7 @@ def test_wall_follow_largemaze_spawn_clear_and_scaled():
 
     layout = layout_for_task("wall_follow")
     assert layout.name == "largemaze"
-    assert WALL_LAYOUT_SCALE == 2.5
+    assert WALL_LAYOUT_SCALE == 4.0
     assert len(layout.boxes) == 8
     # Outer walls at ±4 * scale along axes.
     xs = sorted(float(c[0]) for _h, c, _r in layout.boxes)

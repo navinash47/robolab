@@ -14,12 +14,21 @@ fixed episode count — so a custom 2M-step run decays smoothly over the full ru
 
 `wall_follow` uses the Gazebo **`largemaze.world`** topology from the course
 package (same segments as Fig. 4 scenarios: straight, inside-L, outside-L,
-I-corner, 180° U-turn), scaled by **`WALL_LAYOUT_SCALE = 2.5`** in
-`robolab/tasks/worlds.py`. Outer span ≈ **20 m × 20 m** (source was 8×8 m).
-Shared `WorldLayout` boxes drive MuJoCo `scene.xml`, PyBullet, and Genesis.
+I-corner, 180° U-turn), scaled by **`WALL_LAYOUT_SCALE = 4.0`** in
+`robolab/tasks/worlds.py`. Outer span ≈ **32 m × 32 m**. Shared `WorldLayout`
+boxes drive MuJoCo `scene.xml`, PyBullet, and Genesis.
 
-After a layout change: **retrain** and **re-render** — old checkpoints were
-trained on the previous straight corridor.
+Additional tasks mirror Fig. 4 in isolation: `wall_straight`, `wall_l_inside`,
+`wall_l_outside`, `wall_i_corner`, `wall_uturn` (same reward / obs / action).
+
+Robot: RoboMaster-ish top silhouette (~0.55×0.42 m) in `robot.urdf` (same URDF
+across sims). Render cameras are **top-down**.
+
+PPO continuous reward targets **0.80 m** right standoff (PDF medium band).
+Q-learning still uses PDF `pdf_reward`. See `docs/ARCH_HYPERPARAMS.md`.
+
+After a layout/reward change: **retrain** and **re-render** — old checkpoints
+were trained on the previous corridor / 0.35 m target.
 
 ## Algorithm chosen
 

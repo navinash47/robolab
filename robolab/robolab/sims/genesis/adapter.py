@@ -177,10 +177,10 @@ class DiffDriveLidarGenesisEnv(gym.Env):
         )
         if render_mode == "rgb_array":
             self._cam = self._scene.add_camera(
-                res=(320, 240),
-                pos=(sx - 2.0, sy, 2.5),
+                res=(480, 480),
+                pos=(sx, sy, 14.0),
                 lookat=(sx, sy, 0.05),
-                fov=60,
+                fov=50,
                 GUI=False,
                 debug=True,
             )
@@ -325,7 +325,7 @@ class DiffDriveLidarGenesisEnv(gym.Env):
         if self.render_mode != "rgb_array" or self._cam is None:
             return None
         self._cam.set_pose(
-            pos=(self._xy[0] - 2.5, self._xy[1], 2.5),
+            pos=(self._xy[0], self._xy[1], 14.0),
             lookat=(self._xy[0], self._xy[1], 0.05),
         )
         rgb, _, _, _ = self._cam.render(rgb=True)

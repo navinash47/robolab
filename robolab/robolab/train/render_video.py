@@ -56,7 +56,9 @@ def _env_render_fps(env) -> int:
 
 def _playback_step_budget(task: TaskSpec, fps: int) -> int:
     """Control steps (= frames) for one recorded episode."""
-    if task.name == "wall_follow":
+    from robolab.tasks.worlds import is_wall_follow_family
+
+    if is_wall_follow_family(task.name):
         return int(WALL_FOLLOW_RENDER_SECONDS * fps)
     return int(task.max_steps)
 

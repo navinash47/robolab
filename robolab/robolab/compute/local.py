@@ -201,3 +201,52 @@ def launch_render(
     )
     proc._robolab_log = log_f  # type: ignore[attr-defined]
     return proc
+
+
+def launch_transfer(
+    *,
+    run_id: str,
+    config_path: Path,
+    checkpoint: Path,
+    backend_url: str = "http://127.0.0.1:8000",
+    targets: list[str] | None = None,
+    n_episodes: int = 5,
+) -> subprocess.Popen:
+    """Spawn Phase 6 transfer eval subprocess (mujoco/pybullet local only)."""
+    env = _trainer_env(backend_url)
+    gl = _mujoco_gl_for_local()
+    if gl:
+        env["MUJOCO_GL"] = gl
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "robolab.train.transfer",
+        "--run-id",
+        run_id,
+        "--config",
+        str(config_path),
+        "--checkpoint",
+        str(checkpoint),
+        "--backend-url",
+        backend_url,
+        "--n-episodes",
+        str(max(1, int(n_episodes))),
+    ]
+    if targets:
+        cmd.extend(["--targets", ",".join(targets)])
+
+    log_dir = repo_root() / "runs" / run_id
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "transfer.log"
+    log_f = open(log_path, "w", encoding="utf-8")
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(repo_root()),
+        env=env,
+        stdout=log_f,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    proc._robolab_log = log_f  # type: ignore[attr-defined]
+    return proc

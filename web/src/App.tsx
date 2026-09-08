@@ -74,7 +74,20 @@ type RunRow = {
     path?: string | null;
     exists?: boolean;
   }>;
+  transfer_status?: string | null;
+  transfer_error?: string | null;
+  transfer_summary?: {
+    source_mean?: number | null;
+    targets?: Array<{
+      sim?: string;
+      status?: string;
+      mean?: number | null;
+      transfer_ratio?: number | null;
+      gap?: number | null;
+    }>;
+  } | null;
   created_at?: string | null;
+  config?: Record<string, unknown>;
   group?: string | null;
 };
 
@@ -102,6 +115,45 @@ type CompareResponse = {
   metric_key: string;
   runs: CompareRun[];
 };
+
+type TransferReport = {
+  run_id: string;
+  status: string;
+  source_sim?: string;
+  arch?: string;
+  task?: string;
+  n_episodes?: number;
+  source?: {
+    sim?: string;
+    status?: string;
+    mean?: number | null;
+    std?: number | null;
+    ci_low?: number | null;
+    ci_high?: number | null;
+  };
+  targets?: Array<{
+    sim?: string;
+    status?: string;
+    mean?: number | null;
+    ci_low?: number | null;
+    ci_high?: number | null;
+    transfer_ratio?: number | null;
+    gap?: number | null;
+    reason?: string;
+  }>;
+  robustness?: {
+    friction?: Array<{ sim: string; value: number; mean_return: number | null; status?: string }>;
+    mass_scale?: Array<{ sim: string; value: number; mean_return: number | null; status?: string }>;
+    sensor_noise_std?: Array<{
+      sim: string;
+      value: number;
+      mean_return: number | null;
+      status?: string;
+    }>;
+  };
+  error?: string;
+};
+
 
 type SavedArch = {
   id: string;
@@ -232,7 +284,7 @@ function buildChartData(runs: CompareRun[]): Record<string, number | null>[] {
 }
 
 export default function App() {
-  const [view, setView] = useState<"experiments" | "compare" | "architectures">(
+  const [view, setView] = useState<"experiments" | "compare" | "architectures" | "transfer">(
     "experiments",
   );
   const [archDetailKey, setArchDetailKey] = useState<string | null>(null);
@@ -261,6 +313,10 @@ export default function App() {
   const [selectedCompare, setSelectedCompare] = useState<string[]>([]);
   const [compareData, setCompareData] = useState<CompareResponse | null>(null);
   const [comparing, setComparing] = useState(false);
+  const [transferRunId, setTransferRunId] = useState<string>("");
+  const [transferReport, setTransferReport] = useState<TransferReport | null>(null);
+  const [transferLoading, setTransferLoading] = useState(false);
+  const [transferRunning, setTransferRunning] = useState(false);
   const [renderingId, setRenderingId] = useState<string | null>(null);
   const [abortingId, setAbortingId] = useState<string | null>(null);
   const [flaggingId, setFlaggingId] = useState<string | null>(null);
@@ -283,6 +339,7 @@ export default function App() {
     timesteps: 50_000,
     gpu_type: "best",
     budget_usd: 0,
+    transfer_to: [] as string[],
   });
   const [builderBase, setBuilderBase] = useState("kaf");
   const [builderName, setBuilderName] = useState("kaf_wall_follow");
@@ -548,7 +605,7 @@ export default function App() {
         compute: form.compute,
         gpu_type: isRunpod ? form.gpu_type : null,
         budget_usd: isRunpod ? Number(form.budget_usd) || 0 : 0,
-        transfer_to: null,
+        transfer_to: form.transfer_to.length > 0 ? form.transfer_to : null,
       };
       const res = await fetch("/api/runs", {
         method: "POST",
@@ -706,6 +763,69 @@ export default function App() {
       setError(err instanceof Error ? err.message : "Compare failed");
     } finally {
       setComparing(false);
+    }
+  }
+
+  async function loadTransferReport(runId: string) {
+    if (!runId) {
+      setTransferReport(null);
+      return;
+    }
+    setTransferLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/runs/${runId}/transfer`);
+      if (res.status === 404) {
+        setTransferReport(null);
+        return;
+      }
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`GET transfer failed (${res.status}): ${text}`);
+      }
+      const data = (await res.json()) as TransferReport;
+      setTransferReport(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Transfer load failed");
+    } finally {
+      setTransferLoading(false);
+    }
+  }
+
+  async function startTransferEval() {
+    if (!transferRunId) {
+      setError("Pick a COMPLETE run for transfer");
+      return;
+    }
+    setTransferRunning(true);
+    setError(null);
+    try {
+      const run = runs.find((r) => r.id === transferRunId);
+      const defaultTarget = (run?.sim || "mujoco") === "mujoco" ? "pybullet" : "mujoco";
+      const res = await fetch(`/api/runs/${transferRunId}/transfer`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ targets: [defaultTarget], n_episodes: 3 }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`POST transfer failed (${res.status}): ${text}`);
+      }
+      for (let i = 0; i < 90; i++) {
+        await new Promise((r) => setTimeout(r, 2000));
+        const tr = await fetch(`/api/runs/${transferRunId}/transfer`);
+        if (tr.status === 404) continue;
+        if (!tr.ok) continue;
+        const data = (await tr.json()) as TransferReport;
+        if (data.status === "RUNNING") continue;
+        setTransferReport(data);
+        await refresh();
+        break;
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Transfer failed");
+    } finally {
+      setTransferRunning(false);
     }
   }
 
@@ -921,6 +1041,15 @@ export default function App() {
           >
             Spend
           </a>
+          <a
+            href="http://localhost:8000/tokens"
+            target="_blank"
+            rel="noopener noreferrer"
+            data-testid="tokens-link"
+            className="text-sm font-medium text-[var(--accent)] underline-offset-2 hover:underline"
+          >
+            Tokens
+          </a>
           <div className="text-right">
             <p className="text-sm font-medium text-[var(--ok)]" data-testid="budget">
               {remainingLabel}
@@ -982,6 +1111,18 @@ export default function App() {
             onClick={() => setView("compare")}
           >
             Compare
+          </button>
+          <button
+            type="button"
+            data-testid="nav-transfer"
+            className={`rounded px-3 py-1.5 text-sm font-medium ${
+              view === "transfer"
+                ? "bg-[var(--accent)] text-white"
+                : "border border-[var(--border)] bg-[var(--surface)]"
+            }`}
+            onClick={() => setView("transfer")}
+          >
+            Transfer
           </button>
         </nav>
 
@@ -1139,7 +1280,13 @@ export default function App() {
                     <select
                       className="w-full rounded border border-[var(--border)] bg-white px-3 py-2"
                       value={form.sim}
-                      onChange={(e) => setForm({ ...form, sim: e.target.value })}
+                      onChange={(e) =>
+                        setForm({
+                          ...form,
+                          sim: e.target.value,
+                          transfer_to: form.transfer_to.filter((t) => t !== e.target.value),
+                        })
+                      }
                       data-testid="sim-select"
                     >
                       {sims.map((s) => {
@@ -1159,6 +1306,34 @@ export default function App() {
                       })}
                     </select>
                   </label>
+                  <div className="text-sm sm:col-span-2" data-testid="transfer-to-field">
+                    <span className="mb-1 block text-[var(--muted)]">
+                      Transfer to (Phase 6, after train)
+                    </span>
+                    <div className="flex flex-wrap gap-3">
+                      {["mujoco", "pybullet"]
+                        .filter((s) => s !== form.sim)
+                        .map((s) => (
+                          <label key={s} className="inline-flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={form.transfer_to.includes(s)}
+                              onChange={(e) => {
+                                const next = e.target.checked
+                                  ? [...form.transfer_to, s]
+                                  : form.transfer_to.filter((x) => x !== s);
+                                setForm({ ...form, transfer_to: next });
+                              }}
+                              data-testid={`transfer-to-${s}`}
+                            />
+                            {s}
+                          </label>
+                        ))}
+                    </div>
+                    <p className="mt-1 text-xs text-[var(--muted)]">
+                      Optional. Zero-shot eval in selected sims after checkpoint save.
+                    </p>
+                  </div>
                   <label className="text-sm sm:col-span-2">
                     <span className="mb-1 block text-[var(--muted)]">Timesteps</span>
                     <div className="flex flex-wrap gap-2">
@@ -2318,6 +2493,205 @@ export default function App() {
                     </tbody>
                   </table>
                 </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {view === "transfer" && (
+          <div data-testid="transfer-view">
+            <div className="mb-4 flex flex-wrap items-baseline justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-medium text-[var(--text)]">Transfer</h2>
+                <p className="text-sm text-[var(--muted)]">
+                  Sim-to-sim zero-shot report: source vs target return, ratio, gap, and
+                  perturbation curves
+                </p>
+              </div>
+              <button
+                type="button"
+                className="rounded border border-[var(--border)] px-3 py-1.5 text-sm"
+                onClick={() => setView("experiments")}
+              >
+                Back to experiments
+              </button>
+            </div>
+
+            <div className="mb-6 flex flex-wrap items-end gap-3">
+              <label className="text-sm">
+                <span className="mb-1 block text-[var(--muted)]">COMPLETE run</span>
+                <select
+                  className="min-w-[16rem] rounded border border-[var(--border)] bg-white px-3 py-2"
+                  value={transferRunId}
+                  data-testid="transfer-run-select"
+                  onChange={(e) => {
+                    const id = e.target.value;
+                    setTransferRunId(id);
+                    void loadTransferReport(id);
+                  }}
+                >
+                  <option value="">Select…</option>
+                  {runs
+                    .filter((r) => r.status === "COMPLETE")
+                    .map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.name} ({r.sim}/{r.arch}) · {r.id.slice(0, 8)}
+                        {r.transfer_status ? ` · ${r.transfer_status}` : ""}
+                      </option>
+                    ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                disabled={!transferRunId || transferRunning}
+                onClick={() => void startTransferEval()}
+                className="rounded bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+                data-testid="transfer-run-btn"
+              >
+                {transferRunning ? "Running transfer…" : "Run transfer"}
+              </button>
+              <button
+                type="button"
+                disabled={!transferRunId || transferLoading}
+                onClick={() => void loadTransferReport(transferRunId)}
+                className="rounded border border-[var(--border)] px-3 py-2 text-sm"
+              >
+                Refresh
+              </button>
+            </div>
+
+            {transferLoading && (
+              <p className="text-sm text-[var(--muted)]">Loading report…</p>
+            )}
+
+            {!transferLoading && transferRunId && !transferReport && (
+              <p className="text-sm text-[var(--muted)]">
+                No report yet. Click <strong>Run transfer</strong> (needs local{" "}
+                <code className="text-xs">policy.zip</code>).
+              </p>
+            )}
+
+            {transferReport && transferReport.status === "FAILED" && (
+              <p className="mb-4 text-sm text-red-700">
+                Transfer failed: {transferReport.error || "unknown error"}
+              </p>
+            )}
+
+            {transferReport && transferReport.status !== "FAILED" && (
+              <>
+                <div
+                  className="mb-6 overflow-x-auto rounded-lg border border-[var(--border)] bg-[var(--surface)]"
+                  data-testid="transfer-table"
+                >
+                  <table className="min-w-full text-left text-sm">
+                    <thead className="border-b border-[var(--border)] text-[var(--muted)]">
+                      <tr>
+                        <th className="px-4 py-2">Sim</th>
+                        <th className="px-4 py-2">Role</th>
+                        <th className="px-4 py-2">Mean return</th>
+                        <th className="px-4 py-2">CI</th>
+                        <th className="px-4 py-2">Ratio</th>
+                        <th className="px-4 py-2">Gap</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr className="border-b border-[var(--border)]">
+                        <td className="px-4 py-2 font-medium">
+                          {transferReport.source?.sim || transferReport.source_sim}
+                        </td>
+                        <td className="px-4 py-2">source</td>
+                        <td className="px-4 py-2">
+                          {transferReport.source?.mean?.toFixed(2) ?? "—"}
+                        </td>
+                        <td className="px-4 py-2 text-[var(--muted)]">
+                          {transferReport.source?.ci_low != null &&
+                          transferReport.source?.ci_high != null
+                            ? `[${transferReport.source.ci_low.toFixed(1)}, ${transferReport.source.ci_high.toFixed(1)}]`
+                            : "—"}
+                        </td>
+                        <td className="px-4 py-2">1.00</td>
+                        <td className="px-4 py-2">0</td>
+                      </tr>
+                      {(transferReport.targets || []).map((t) => (
+                        <tr key={t.sim} className="border-b border-[var(--border)]">
+                          <td className="px-4 py-2 font-medium">{t.sim}</td>
+                          <td className="px-4 py-2">
+                            {t.status === "ok" ? "target" : t.status || "—"}
+                          </td>
+                          <td className="px-4 py-2">
+                            {t.mean != null ? t.mean.toFixed(2) : t.reason || "—"}
+                          </td>
+                          <td className="px-4 py-2 text-[var(--muted)]">
+                            {t.ci_low != null && t.ci_high != null
+                              ? `[${t.ci_low.toFixed(1)}, ${t.ci_high.toFixed(1)}]`
+                              : "—"}
+                          </td>
+                          <td className="px-4 py-2">
+                            {t.transfer_ratio != null ? t.transfer_ratio.toFixed(3) : "—"}
+                          </td>
+                          <td className="px-4 py-2">
+                            {t.gap != null ? t.gap.toFixed(2) : "—"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {(
+                  [
+                    ["friction", "Friction"],
+                    ["mass_scale", "Mass scale"],
+                    ["sensor_noise_std", "Sensor noise"],
+                  ] as const
+                ).map(([key, label]) => {
+                  const rows = transferReport.robustness?.[key] || [];
+                  const simsInChart = [...new Set(rows.map((r) => r.sim))];
+                  const values = [...new Set(rows.map((r) => r.value))].sort(
+                    (a, b) => a - b,
+                  );
+                  const chartRows = values.map((v) => {
+                    const point: Record<string, number | null> = { value: v };
+                    for (const s of simsInChart) {
+                      const hit = rows.find((r) => r.sim === s && r.value === v);
+                      point[s] = hit?.mean_return ?? null;
+                    }
+                    return point;
+                  });
+                  return (
+                    <div
+                      key={key}
+                      className="mb-6 h-64 w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4"
+                      data-testid={`transfer-robust-${key}`}
+                    >
+                      <p className="mb-2 text-sm font-medium">{label} robustness</p>
+                      {chartRows.length === 0 ? (
+                        <p className="text-sm text-[var(--muted)]">No sweep data</p>
+                      ) : (
+                        <ResponsiveContainer width="100%" height="85%">
+                          <LineChart data={chartRows}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                            <XAxis dataKey="value" tick={{ fontSize: 12 }} />
+                            <YAxis tick={{ fontSize: 12 }} />
+                            <Tooltip />
+                            <Legend />
+                            {simsInChart.map((s, i) => (
+                              <Line
+                                key={s}
+                                type="monotone"
+                                dataKey={s}
+                                stroke={SERIES_COLORS[i % SERIES_COLORS.length]}
+                                dot
+                                connectNulls
+                                strokeWidth={2}
+                              />
+                            ))}
+                          </LineChart>
+                        </ResponsiveContainer>
+                      )}
+                    </div>
+                  );
+                })}
               </>
             )}
           </div>

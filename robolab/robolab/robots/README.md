@@ -14,14 +14,19 @@ MuJoCo's URDF compiler supports a **subset** of URDF. Known limits that matter f
 
 ## `diffdrive_lidar`
 
-Differential-drive base with 5 virtual range rays (front, ±45°, ±90°). Geometry: box chassis + two cylinder wheels. No meshes.
+Differential-drive base with 5 virtual range rays (front, ±45°, ±90°). **RoboMaster-ish**
+top silhouette (~0.55×0.42 m hull + red/blue armor plates). Primitive geoms only.
+Same URDF across sims.
 
-**Used by all Phase 5B tasks** (`wall_follow`, `go_to_goal`, `docking`, `maze`, `figure8_tracking`) — no new robot required.
+**Tasks:** `wall_follow` + Fig. 4 scenarios (`wall_straight`, `wall_l_inside`,
+`wall_l_outside`, `wall_i_corner`, `wall_uturn`), plus `go_to_goal` / `docking` /
+`maze` / `figure8_tracking`.
 
 | File | Role |
 |---|---|
 | `robot.urdf` | Canonical URDF (PyBullet / Genesis) |
-| `scene.xml` | MuJoCo scaled largemaze (`wall_follow`) |
+| `scene.xml` | MuJoCo P2_D3 largemaze ×4 (`wall_follow`) |
+| `scene_wall_*.xml` | Fig. 4 scenario isolates |
 | `scene_open.xml` | Open arena (`go_to_goal`, `figure8_tracking`) |
 | `scene_dock.xml` | Parallel-park bay (`docking`) |
 | `scene_maze.xml` | Obstacle maze (`maze`) |

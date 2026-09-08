@@ -15,10 +15,10 @@ from typing import Any
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.sse import EventSourceResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlmodel import select
 
-from robolab.compute.local import launch_local, launch_render, repo_root
+from robolab.compute.local import launch_local, launch_render, launch_transfer, repo_root
 from robolab.compute.runpod import (
     RunPodConfigError,
     launch_render_runpod,
@@ -69,6 +69,22 @@ class CompleteBody(BaseModel):
     act_dim: int | None = None
     control_hz: float | None = None
     physics_substeps: int | None = None
+    transfer: dict[str, Any] | None = None
+
+
+class TransferRequest(BaseModel):
+    targets: list[str] | None = None
+    n_episodes: int = Field(default=5, ge=1, le=50)
+
+
+class TransferCompleteBody(BaseModel):
+    status: str = "READY"
+    report: dict[str, Any] | None = None
+
+
+class TransferFailBody(BaseModel):
+    error: str
+    traceback: str | None = None
 
 
 class FailBody(BaseModel):
@@ -106,6 +122,59 @@ class ProgressEvent(BaseModel):
     video_status: str | None = None
     video_url: str | None = None
     video_error: str | None = None
+
+
+def _transfer_summary(report: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not report:
+        return None
+    source = report.get("source") or {}
+    targets = []
+    for t in report.get("targets") or []:
+        targets.append(
+            {
+                "sim": t.get("sim"),
+                "status": t.get("status"),
+                "mean": t.get("mean"),
+                "transfer_ratio": t.get("transfer_ratio"),
+                "gap": t.get("gap"),
+            }
+        )
+    return {
+        "source_mean": source.get("mean"),
+        "targets": targets,
+    }
+
+
+def _load_transfer_report(run: Run) -> dict[str, Any] | None:
+    if run.transfer_json:
+        try:
+            data = json.loads(run.transfer_json)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+    path = repo_root() / "transfer" / run.id / "report.json"
+    if path.is_file():
+        try:
+            data = json.loads(path.read_text())
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            return None
+    return None
+
+
+def _persist_transfer_report(run: Run, report: dict[str, Any]) -> None:
+    dest = repo_root() / "transfer" / run.id
+    dest.mkdir(parents=True, exist_ok=True)
+    (dest / "report.json").write_text(json.dumps(report, indent=2))
+    run.transfer_json = json.dumps(report)
+    status = str(report.get("status") or "READY")
+    run.transfer_status = status if status in {"READY", "FAILED", "RUNNING"} else "READY"
+    if status == "FAILED":
+        run.transfer_error = str(report.get("error") or "transfer failed")
+    else:
+        run.transfer_error = None
 
 
 def _checkpoints_for(run: Run) -> list[dict[str, Any]]:
@@ -153,7 +222,7 @@ def _space_dims_for(run: Run) -> tuple[int | None, int | None]:
         obs = obs if obs is not None else int(spec.observation.shape[0])
         act = act if act is not None else int(spec.action.shape[0])
     except Exception:
-        if task_name == "wall_follow":
+        if task_name == "wall_follow" or str(task_name).startswith("wall_"):
             obs = obs if obs is not None else 5
             act = act if act is not None else 2
     return obs, act
@@ -213,6 +282,9 @@ def _run_to_dict(run: Run) -> dict[str, Any]:
         "video_error": run.video_error,
         "checkpoint_artifact": run.checkpoint_artifact,
         "checkpoints": _checkpoints_for(run),
+        "transfer_status": run.transfer_status,
+        "transfer_error": run.transfer_error,
+        "transfer_summary": _transfer_summary(_load_transfer_report(run)),
         "created_at": run.created_at.isoformat() if run.created_at else None,
         "updated_at": run.updated_at.isoformat() if run.updated_at else None,
         "config": json.loads(run.config_json) if run.config_json else {},
@@ -524,6 +596,8 @@ def complete(run_id: str, body: CompleteBody, session: SessionDep) -> dict:
         local = repo_root() / "checkpoints" / run_id / "policy.zip"
         if local.is_file():
             run.checkpoint_artifact = f"policy-{run_id}"
+    if body.transfer:
+        _persist_transfer_report(run, body.transfer)
     run.updated_at = datetime.now(timezone.utc)
     _settle_runpod_cost(session, run, reason="complete")
     session.add(run)
@@ -746,6 +820,120 @@ def video_fail(run_id: str, body: VideoFailBody, session: SessionDep) -> dict:
         raise HTTPException(404, f"Run {run_id} not found")
     run.video_status = "FAILED"
     run.video_error = body.error
+    run.updated_at = datetime.now(timezone.utc)
+    session.add(run)
+    session.commit()
+    return {"ok": True}
+
+
+@router.get("/{run_id}/transfer")
+def get_transfer(run_id: str, session: SessionDep) -> dict:
+    """Phase 6 transfer report for a run."""
+    run = session.get(Run, run_id)
+    if not run:
+        raise HTTPException(404, f"Run {run_id} not found")
+    report = _load_transfer_report(run)
+    if not report and run.transfer_status == "RUNNING":
+        return {
+            "run_id": run_id,
+            "status": "RUNNING",
+            "source_sim": run.sim,
+            "targets": [],
+            "robustness": {},
+        }
+    if not report:
+        raise HTTPException(404, f"No transfer report for run {run_id}")
+    return report
+
+
+@router.post("/{run_id}/transfer")
+def start_transfer(run_id: str, body: TransferRequest, session: SessionDep) -> dict:
+    """Queue local zero-shot transfer eval (Phase 6). No RunPod / long train."""
+    run = session.get(Run, run_id)
+    if not run:
+        raise HTTPException(404, f"Run {run_id} not found")
+    if run.status != RunStatus.COMPLETE.value:
+        raise HTTPException(
+            400,
+            f"Transfer requires COMPLETE status (got {run.status})",
+        )
+    if run.transfer_status == "RUNNING":
+        return _run_to_dict(run)
+
+    ckpt = repo_root() / "checkpoints" / run_id / "policy.zip"
+    if not ckpt.is_file():
+        raise HTTPException(400, f"Missing local checkpoint at {ckpt}")
+
+    config_path = repo_root() / "runs" / run_id / "config.yaml"
+    if not config_path.is_file():
+        # Fall back: write config from DB so transfer CLI can load it.
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            cfg_obj = RunConfig.model_validate_json(run.config_json or "{}")
+            import yaml
+
+            config_path.write_text(yaml.safe_dump(cfg_obj.model_dump(), sort_keys=False))
+        except Exception as exc:
+            raise HTTPException(400, f"Cannot prepare run config: {exc}") from exc
+
+    try:
+        proc = launch_transfer(
+            run_id=run_id,
+            config_path=config_path,
+            checkpoint=ckpt,
+            backend_url="http://127.0.0.1:8000",
+            targets=body.targets,
+            n_episodes=body.n_episodes,
+        )
+    except Exception as exc:
+        run.transfer_status = "FAILED"
+        run.transfer_error = str(exc)
+        run.updated_at = datetime.now(timezone.utc)
+        session.add(run)
+        session.commit()
+        raise HTTPException(500, f"Failed to launch transfer: {exc}") from exc
+
+    run.transfer_status = "RUNNING"
+    run.transfer_error = None
+    run.pid = proc.pid
+    run.updated_at = datetime.now(timezone.utc)
+    session.add(run)
+    session.commit()
+    session.refresh(run)
+    return _run_to_dict(run)
+
+
+@router.post("/{run_id}/transfer-complete")
+def transfer_complete(run_id: str, body: TransferCompleteBody, session: SessionDep) -> dict:
+    run = session.get(Run, run_id)
+    if not run:
+        raise HTTPException(404, f"Run {run_id} not found")
+    report = body.report or _load_transfer_report(run) or {"status": "READY", "run_id": run_id}
+    if body.status:
+        report["status"] = body.status
+    _persist_transfer_report(run, report)
+    run.updated_at = datetime.now(timezone.utc)
+    session.add(run)
+    session.commit()
+    return {"ok": True, "status": run.transfer_status}
+
+
+@router.post("/{run_id}/transfer-fail")
+def transfer_fail(run_id: str, body: TransferFailBody, session: SessionDep) -> dict:
+    run = session.get(Run, run_id)
+    if not run:
+        raise HTTPException(404, f"Run {run_id} not found")
+    run.transfer_status = "FAILED"
+    run.transfer_error = body.error
+    failed = {
+        "run_id": run_id,
+        "status": "FAILED",
+        "error": body.error,
+        "source_sim": run.sim,
+        "targets": [],
+        "robustness": {},
+    }
+    run.transfer_json = json.dumps(failed)
     run.updated_at = datetime.now(timezone.utc)
     session.add(run)
     session.commit()

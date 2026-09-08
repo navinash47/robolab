@@ -1,8 +1,5 @@
 <mujoco model="diffdrive_wall_follow">
-  <!-- Mirrors robots/diffdrive_lidar/robot.urdf geometry on a freejoint + arena.
-       Lidar rays are cast in Python via mujoco.mj_ray (not MJCF rangefinders).
-       Drive is applied as planar freejoint velocities (stable for RL); wheel joints are visual.
-       Walls: P2_D3 Gazebo largemaze.world topology × WALL_LAYOUT_SCALE (2.5) from worlds.py. -->
+  <!-- P2_D3 largemaze × WALL_LAYOUT_SCALE=4.0; RoboMaster-ish chassis. Sync with worlds.py. -->
   <compiler angle="radian" balanceinertia="true" autolimits="true"/>
   <option timestep="0.002" gravity="0 0 -9.81" integrator="implicitfast"/>
 
@@ -11,33 +8,36 @@
   </default>
 
   <worldbody>
-    <light pos="0 0 8" dir="0 0 -1" diffuse="0.8 0.8 0.8"/>
-    <geom name="floor" type="plane" size="12 12 0.05" rgba="0.85 0.88 0.9 1" friction="1 0.5 0.01"/>
+    <light pos="0 0 20" dir="0 0 -1" diffuse="0.85 0.85 0.85"/>
+    <geom name="floor" type="plane" size="18 18 0.05" rgba="0.78 0.82 0.86 1" friction="1 0.5 0.01"/>
 
-    <!-- Scaled largemaze segments (half-extents). Keep in sync with worlds.CORRIDOR_BOXES. -->
-    <geom name="wall_bottom_inner" type="box" pos="0 -5 0.25" size="5 0.05 0.25" rgba="0.55 0.45 0.35 1"/>
-    <geom name="wall_mid_left" type="box" pos="-6.25 0 0.25" size="3.75 0.05 0.25" rgba="0.55 0.45 0.35 1"/>
-    <geom name="wall_left" type="box" pos="-10 0 0.25" size="0.05 10 0.25" rgba="0.55 0.45 0.35 1"/>
-    <geom name="wall_stub" type="box" pos="5 2.5 0.25" size="0.05 2.5 0.25" rgba="0.55 0.45 0.35 1"/>
-    <geom name="wall_top" type="box" pos="0 10 0.25" size="10 0.05 0.25" rgba="0.55 0.45 0.35 1"/>
-    <geom name="wall_right" type="box" pos="10 0 0.25" size="0.05 10 0.25" rgba="0.55 0.45 0.35 1"/>
-    <geom name="wall_mid_top" type="box" pos="-2.5 5 0.25" size="7.5 0.05 0.25" rgba="0.55 0.45 0.35 1"/>
-    <geom name="wall_bottom" type="box" pos="0 -10 0.25" size="10 0.05 0.25" rgba="0.55 0.45 0.35 1"/>
+    <geom name="wall_0" type="box" pos="0 -8 0.35" size="8 0.06 0.35" rgba="0.55 0.45 0.35 1"/>
+    <geom name="wall_1" type="box" pos="-10 0 0.35" size="6 0.06 0.35" rgba="0.55 0.45 0.35 1"/>
+    <geom name="wall_2" type="box" pos="-16 0 0.35" size="0.06 16 0.35" rgba="0.55 0.45 0.35 1"/>
+    <geom name="wall_3" type="box" pos="8 4 0.35" size="0.06 4 0.35" rgba="0.55 0.45 0.35 1"/>
+    <geom name="wall_4" type="box" pos="0 16 0.35" size="16 0.06 0.35" rgba="0.55 0.45 0.35 1"/>
+    <geom name="wall_5" type="box" pos="16 0 0.35" size="0.06 16 0.35" rgba="0.55 0.45 0.35 1"/>
+    <geom name="wall_6" type="box" pos="-4 8 0.35" size="12 0.06 0.35" rgba="0.55 0.45 0.35 1"/>
+    <geom name="wall_7" type="box" pos="0 -16 0.35" size="16 0.06 0.35" rgba="0.55 0.45 0.35 1"/>
 
-    <!-- Robot geoms use group 1 so mj_ray can ignore self-hits (cast group 0 only). -->
-    <body name="base" pos="0 0 0.05">
+    <body name="base" pos="0 0 0.075">
       <freejoint name="root"/>
-      <geom name="chassis" type="box" size="0.15 0.12 0.04" pos="0 0 0.09" mass="4.0" rgba="0.15 0.35 0.75 1" group="1" contype="1" conaffinity="1"/>
-      <geom name="lidar_mount" type="cylinder" size="0.03 0.02" pos="0.08 0 0.15" mass="0.05" rgba="0.2 0.2 0.2 1" contype="0" conaffinity="0" group="1"/>
 
-      <body name="left_wheel" pos="0 0.14 0">
-        <joint name="left_wheel_joint" type="hinge" axis="0 1 0" damping="0.1"/>
-        <geom name="left_wheel_geom" type="cylinder" size="0.05 0.02" quat="0.7071 0.7071 0 0" mass="0.4" rgba="0.1 0.1 0.1 1" friction="1.5 0.5 0.01" group="1" contype="0" conaffinity="0"/>
+      <geom name="chassis" type="box" size="0.275 0.21 0.06" pos="0 0 0.11" mass="8.0" rgba="0.12 0.14 0.18 1" group="1" contype="1" conaffinity="1"/>
+      <geom name="armor_front" type="box" size="0.04 0.18 0.05" pos="0.24 0 0.12" mass="0.3" rgba="0.85 0.15 0.12 1" group="1" contype="0" conaffinity="0"/>
+      <geom name="armor_rear" type="box" size="0.03 0.16 0.045" pos="-0.24 0 0.12" mass="0.2" rgba="0.85 0.15 0.12 1" group="1" contype="0" conaffinity="0"/>
+      <geom name="armor_left" type="box" size="0.18 0.03 0.045" pos="0 0.20 0.12" mass="0.2" rgba="0.2 0.45 0.85 1" group="1" contype="0" conaffinity="0"/>
+      <geom name="armor_right" type="box" size="0.18 0.03 0.045" pos="0 -0.20 0.12" mass="0.2" rgba="0.2 0.45 0.85 1" group="1" contype="0" conaffinity="0"/>
+      <geom name="lidar_mount" type="cylinder" size="0.04 0.025" pos="0.10 0 0.20" mass="0.08" rgba="0.25 0.25 0.28 1" contype="0" conaffinity="0" group="1"/>
+      <body name="left_wheel" pos="0 0.22 0">
+        <joint name="left_wheel_joint" type="hinge" axis="0 1 0" damping="0.12"/>
+        <geom name="left_wheel_geom" type="cylinder" size="0.075 0.03" quat="0.7071 0.7071 0 0" mass="0.6" rgba="0.08 0.08 0.08 1" friction="1.5 0.5 0.01" group="1" contype="0" conaffinity="0"/>
       </body>
-      <body name="right_wheel" pos="0 -0.14 0">
-        <joint name="right_wheel_joint" type="hinge" axis="0 1 0" damping="0.1"/>
-        <geom name="right_wheel_geom" type="cylinder" size="0.05 0.02" quat="0.7071 0.7071 0 0" mass="0.4" rgba="0.1 0.1 0.1 1" friction="1.5 0.5 0.01" group="1" contype="0" conaffinity="0"/>
+      <body name="right_wheel" pos="0 -0.22 0">
+        <joint name="right_wheel_joint" type="hinge" axis="0 1 0" damping="0.12"/>
+        <geom name="right_wheel_geom" type="cylinder" size="0.075 0.03" quat="0.7071 0.7071 0 0" mass="0.6" rgba="0.08 0.08 0.08 1" friction="1.5 0.5 0.01" group="1" contype="0" conaffinity="0"/>
       </body>
+
     </body>
   </worldbody>
 </mujoco>

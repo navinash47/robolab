@@ -62,8 +62,8 @@ class DiffDriveLidarEnv(gym.Env):
             dtype=np.float32,
         )
 
-        self._wheel_radius = 0.05
-        self._half_track = 0.14
+        self._wheel_radius = 0.075
+        self._half_track = 0.22
         self._v_max = 0.5
         self._w_max = 1.2
         self._steps = 0
@@ -262,13 +262,16 @@ class DiffDriveLidarEnv(gym.Env):
         if self.render_mode != "rgb_array":
             return None
         if self._renderer is None:
-            self._renderer = mujoco.Renderer(self.model, height=240, width=320)
+            self._renderer = mujoco.Renderer(self.model, height=480, width=480)
             self._cam = mujoco.MjvCamera()
             mujoco.mjv_defaultCamera(self._cam)
-            self._cam.elevation = -35
-            self._cam.azimuth = 90
-            self._cam.distance = 3.5
+            # Top-down RoboMaster POV (look straight down).
+            self._cam.elevation = -90
+            self._cam.azimuth = 0
+            self._cam.distance = 14.0
         self._cam.lookat[:] = self.data.xpos[self._base_body]
+        # Keep a wide overhead framing on the large maze.
+        self._cam.distance = max(10.0, float(self._cam.distance))
         self._renderer.update_scene(self.data, camera=self._cam)
         return self._renderer.render()
 

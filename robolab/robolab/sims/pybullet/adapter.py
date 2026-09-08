@@ -59,8 +59,8 @@ class DiffDriveLidarPybulletEnv(gym.Env):
             dtype=np.float32,
         )
 
-        self._wheel_radius = 0.05
-        self._half_track = 0.14
+        self._wheel_radius = 0.075
+        self._half_track = 0.22
         self._v_max = 0.5
         self._w_max = 1.2
         self._steps = 0
@@ -318,29 +318,29 @@ class DiffDriveLidarPybulletEnv(gym.Env):
         )
         view = p.computeViewMatrixFromYawPitchRoll(
             cameraTargetPosition=[float(pos[0]), float(pos[1]), float(pos[2])],
-            distance=3.5,
-            yaw=90,
-            pitch=-35,
+            distance=14.0,
+            yaw=0,
+            pitch=-89.0,
             roll=0,
             upAxisIndex=2,
             physicsClientId=self._cid,
         )
         proj = p.computeProjectionMatrixFOV(
-            fov=60,
-            aspect=320 / 240,
+            fov=55,
+            aspect=1.0,
             nearVal=0.1,
-            farVal=100.0,
+            farVal=120.0,
             physicsClientId=self._cid,
         )
         _w, _h, rgba, _depth, _seg = p.getCameraImage(
-            width=320,
-            height=240,
+            width=480,
+            height=480,
             viewMatrix=view,
             projectionMatrix=proj,
             renderer=p.ER_TINY_RENDERER,
             physicsClientId=self._cid,
         )
-        rgb = np.reshape(np.asarray(rgba, dtype=np.uint8), (240, 320, 4))[:, :, :3]
+        rgb = np.reshape(np.asarray(rgba, dtype=np.uint8), (480, 480, 4))[:, :, :3]
         return np.ascontiguousarray(rgb)
 
     def close(self):

@@ -33,6 +33,7 @@ yarn-error.log*
 
 # Checkpoints / artifacts / videos (never commit)
 checkpoints/
+transfer/
 *.pt
 *.pth
 *.ckpt

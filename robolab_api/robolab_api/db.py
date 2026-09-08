@@ -55,6 +55,9 @@ class Run(SQLModel, table=True):
     act_dim: Optional[int] = None
     control_hz: Optional[float] = None
     physics_substeps: Optional[int] = None
+    transfer_status: Optional[str] = None  # None | RUNNING | READY | FAILED
+    transfer_json: Optional[str] = None  # cached report JSON
+    transfer_error: Optional[str] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -112,6 +115,24 @@ class SavedArch(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class TokenLedger(SQLModel, table=True):
+    """Cursor / agent token usage events (local estimates; not Cursor billing truth)."""
+
+    __tablename__ = "tokenledger"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    source: str = Field(default="manual", index=True)  # manual | headroom | proxy | estimate
+    model: str = Field(default="", index=True)
+    session_label: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    tokens_saved: int = 0
+    estimated_usd: float = 0.0
+    note: str = ""
+    meta_json: str = "{}"
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 _RUN_EXTRA_COLS: dict[str, str] = {
     "param_count": "INTEGER",
     "pod_id": "TEXT",
@@ -128,6 +149,9 @@ _RUN_EXTRA_COLS: dict[str, str] = {
     "act_dim": "INTEGER",
     "control_hz": "REAL",
     "physics_substeps": "INTEGER",
+    "transfer_status": "TEXT",
+    "transfer_json": "TEXT",
+    "transfer_error": "TEXT",
 }
 
 

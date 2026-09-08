@@ -18,6 +18,7 @@ from robolab_api.routes import (
     costs_router,
     failures_router,
     runs_router,
+    tokens_router,
 )
 from robolab_api.routes.failures import ensure_seeded
 from robolab_api.wandb_status import get_wandb_status
@@ -89,6 +90,7 @@ app.include_router(compare_router)
 app.include_router(costs_router)
 app.include_router(failures_router)
 app.include_router(architectures_router)
+app.include_router(tokens_router)
 
 
 @app.get("/health")
@@ -175,6 +177,9 @@ def list_experiments(session: SessionDep) -> dict:
                 "video_error": d["video_error"],
                 "checkpoint_artifact": d["checkpoint_artifact"],
                 "checkpoints": d["checkpoints"],
+                "transfer_status": d.get("transfer_status"),
+                "transfer_summary": d.get("transfer_summary"),
+                "transfer_error": d.get("transfer_error"),
                 "created_at": d["created_at"],
             }
         )

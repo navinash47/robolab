@@ -5,6 +5,7 @@ from robolab_api.routes.compare import router as compare_router
 from robolab_api.routes.costs import router as costs_router
 from robolab_api.routes.failures import router as failures_router
 from robolab_api.routes.runs import router as runs_router
+from robolab_api.routes.tokens import router as tokens_router
 
 __all__ = [
     "architectures_router",
@@ -12,4 +13,5 @@ __all__ = [
     "compare_router",
     "costs_router",
     "failures_router",
+    "tokens_router",
 ]

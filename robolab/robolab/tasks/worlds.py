@@ -13,9 +13,9 @@ from robolab.robots.paths import robot_dir
 # Boxes: (half_extents_xyz, center_xyz, rgba)
 BoxSpec = tuple[list[float], list[float], list[float]]
 
-# Chassis is 0.30×0.24 m; circumradius ≈ 0.192. Slightly smaller keeps spawn clear
-# of thin corridor walls while still blocking wall tunneling under kinematic drive.
-ROBOT_COLLISION_RADIUS = 0.18
+# RoboMaster-ish chassis ~0.55×0.42 m; circumradius ≈ 0.35. Slightly smaller
+# keeps spawn clear of thin corridor walls while still blocking tunneling.
+ROBOT_COLLISION_RADIUS = 0.32
 
 
 @dataclass(frozen=True)
@@ -154,10 +154,29 @@ def is_wall_crash(info: dict[str, Any], collision_dist: float = 0.12) -> bool:
 # Source topology (m, yaw≈0 or π/2): outer 8×8 box (x,y ∈ [-4,4]) plus
 # internal segments for straight / inside-L / outside-L / I-corner / 180° U-turn
 # (Fig. 4 in P2_D3). Linear XY scale only; keep thin walls for lidar.
-WALL_LAYOUT_SCALE = 2.5
+WALL_LAYOUT_SCALE = 4.0  # outer span ≈ 32 m (was 2.5 → 20 m)
 _WALL_RGBA = [0.55, 0.45, 0.35, 1.0]
-_WALL_H = 0.25
-_WALL_HALF_T = 0.05  # half-thickness (m); not scaled — keep lidar/robot sensible
+_WALL_H = 0.35
+_WALL_HALF_T = 0.06  # half-thickness (m); not scaled — keep lidar/robot sensible
+
+
+def _segment_boxes(
+    segments: tuple[tuple[float, float, float, float], ...],
+    *,
+    scale: float = 1.0,
+) -> tuple[BoxSpec, ...]:
+    """(cx, cy, yaw, full_length) → half-extent boxes. yaw≈π/2 → vertical."""
+    boxes: list[BoxSpec] = []
+    s = float(scale)
+    for cx, cy, yaw, length in segments:
+        half_len = 0.5 * length * s
+        if abs(yaw) > 1.0:
+            half = [_WALL_HALF_T, half_len, _WALL_H]
+        else:
+            half = [half_len, _WALL_HALF_T, _WALL_H]
+        center = [cx * s, cy * s, _WALL_H]
+        boxes.append((half, center, list(_WALL_RGBA)))
+    return tuple(boxes)
 
 
 def _scaled_wall_boxes(scale: float = WALL_LAYOUT_SCALE) -> tuple[BoxSpec, ...]:
@@ -173,20 +192,55 @@ def _scaled_wall_boxes(scale: float = WALL_LAYOUT_SCALE) -> tuple[BoxSpec, ...]:
         (-1.0, 2.0, 0.0, 6.0),  # mid_top horizontal
         (0.0, -4.0, 0.0, 8.0),  # bottom horizontal (perimeter)
     )
-    boxes: list[BoxSpec] = []
-    s = float(scale)
-    for cx, cy, yaw, length in segments:
-        half_len = 0.5 * length * s
-        if abs(yaw) > 1.0:  # ≈π/2 → long axis along world Y
-            half = [_WALL_HALF_T, half_len, _WALL_H]
-        else:
-            half = [half_len, _WALL_HALF_T, _WALL_H]
-        center = [cx * s, cy * s, _WALL_H]
-        boxes.append((half, center, list(_WALL_RGBA)))
-    return tuple(boxes)
+    return _segment_boxes(segments, scale=scale)
 
 
 CORRIDOR_BOXES: tuple[BoxSpec, ...] = _scaled_wall_boxes(WALL_LAYOUT_SCALE)
+
+# P2_D3 Fig. 4 scenario slices (meters, unscaled local frames; ~RoboMaster corridor).
+# Spawns place the robot with the right wall in the PDF medium band (~0.8 m).
+_SCENARIO_STRAIGHT = _segment_boxes(
+    (
+        (0.0, -1.0, 0.0, 12.0),  # right wall (follow this)
+        (0.0, 1.2, 0.0, 12.0),  # left wall
+    ),
+    scale=1.0,
+)
+_SCENARIO_L_INSIDE = _segment_boxes(
+    (
+        (0.0, -1.0, 0.0, 8.0),
+        (4.0, 1.0, 1.5708, 6.0),
+        (1.0, 4.0, 0.0, 6.0),
+    ),
+    scale=1.0,
+)
+_SCENARIO_L_OUTSIDE = _segment_boxes(
+    (
+        (0.0, -1.0, 0.0, 8.0),
+        (-1.0, -4.0, 1.5708, 6.0),
+        (-4.0, -1.0, 0.0, 6.0),
+    ),
+    scale=1.0,
+)
+_SCENARIO_I_CORNER = _segment_boxes(
+    (
+        (0.0, -1.0, 0.0, 10.0),
+        (0.0, 1.2, 0.0, 4.0),
+        (3.0, 1.2, 0.0, 4.0),
+        (1.5, 0.1, 1.5708, 2.2),  # stub / doorway
+    ),
+    scale=1.0,
+)
+_SCENARIO_UTURN = _segment_boxes(
+    (
+        (0.0, -1.0, 0.0, 8.0),
+        (0.0, 1.0, 0.0, 8.0),
+        (4.0, 0.0, 1.5708, 2.0),
+        (0.0, 3.0, 0.0, 8.0),
+        (0.0, 5.0, 0.0, 8.0),
+    ),
+    scale=1.0,
+)
 
 # Open arena perimeter for go_to_goal / figure8
 OPEN_PERIMETER: tuple[BoxSpec, ...] = (
@@ -222,13 +276,56 @@ WORLDS: dict[str, WorldLayout] = {
     "wall_follow": WorldLayout(
         name="largemaze",
         boxes=CORRIDOR_BOXES,
-        # Gazebo launch spawn (0,0); open cell east of mid_left segment.
+        # North of mid_left (y=0): right-wall ≈ 0.85 m (PDF medium) when yaw=+x.
         floor_half_xy=(4.0 * WALL_LAYOUT_SCALE + 2.0, 4.0 * WALL_LAYOUT_SCALE + 2.0),
-        spawn_xy=(0.0, 0.0),
+        spawn_xy=(-6.0, 0.85),
         spawn_yaw=0.0,
-        spawn_noise_y=0.2,
+        spawn_noise_y=0.12,
         spawn_noise_yaw=0.2,
         mujoco_scene="scene.xml",
+    ),
+    # P2_D3 Fig. 4 wall tests (shared reward with wall_follow).
+    "wall_straight": WorldLayout(
+        name="straight",
+        boxes=_SCENARIO_STRAIGHT,
+        floor_half_xy=(8.0, 4.0),
+        spawn_xy=(-4.0, -0.2),
+        spawn_yaw=0.0,
+        spawn_noise_y=0.1,
+        spawn_noise_yaw=0.1,
+        mujoco_scene="scene_wall_straight.xml",
+    ),
+    "wall_l_inside": WorldLayout(
+        name="l_inside",
+        boxes=_SCENARIO_L_INSIDE,
+        floor_half_xy=(8.0, 8.0),
+        spawn_xy=(-2.5, -0.2),
+        spawn_yaw=0.0,
+        mujoco_scene="scene_wall_l_inside.xml",
+    ),
+    "wall_l_outside": WorldLayout(
+        name="l_outside",
+        boxes=_SCENARIO_L_OUTSIDE,
+        floor_half_xy=(8.0, 8.0),
+        spawn_xy=(-2.5, -0.2),
+        spawn_yaw=0.0,
+        mujoco_scene="scene_wall_l_outside.xml",
+    ),
+    "wall_i_corner": WorldLayout(
+        name="i_corner",
+        boxes=_SCENARIO_I_CORNER,
+        floor_half_xy=(8.0, 4.0),
+        spawn_xy=(-3.5, -0.2),
+        spawn_yaw=0.0,
+        mujoco_scene="scene_wall_i_corner.xml",
+    ),
+    "wall_uturn": WorldLayout(
+        name="uturn",
+        boxes=_SCENARIO_UTURN,
+        floor_half_xy=(8.0, 8.0),
+        spawn_xy=(-2.5, -0.2),
+        spawn_yaw=0.0,
+        mujoco_scene="scene_wall_uturn.xml",
     ),
     "go_to_goal": WorldLayout(
         name="open",
@@ -390,11 +487,15 @@ def enrich_task_info(
     return info
 
 
+def is_wall_follow_family(task_name: str) -> bool:
+    return task_name == "wall_follow" or task_name.startswith("wall_")
+
+
 def build_observation(task_name: str, ranges: Any, rel_goal: Any) -> Any:
     import numpy as np
 
     r = np.asarray(ranges, dtype=np.float32).reshape(-1)
-    if task_name == "wall_follow":
+    if is_wall_follow_family(task_name):
         return r
     g = np.asarray(rel_goal, dtype=np.float32).reshape(-1)
     return np.concatenate([r, g[:3]], axis=0)

@@ -1,0 +1,11 @@
+name: gpkan_wall_follow
+base_arch: gpkan
+arch_cfg:
+  hidden_sizes:
+  - 32
+  - 32
+  num_basis: 8
+  init_bandwidth: 1
+  base_activation: gelu
+  lr_default: 0.0003
+notes: ''
